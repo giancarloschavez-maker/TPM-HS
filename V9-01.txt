@@ -1,0 +1,1639 @@
+// ==UserScript==
+// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.01
+// @namespace    http://tampermonkey.net/
+// @version      9.01
+// @description  Script Definitivo. Fix UI menus (concatenacion tradicional), Fix ESLint, Fix Rockwell Scraping.
+// @match        https://app.hubspot.com/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
+// @connect      docs.google.com
+// @connect      googleusercontent.com
+// @connect      rockwellautomation.com
+// @connect      www.rockwellautomation.com
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    if (document.getElementById('hs-precision-dock')) return;
+
+    // ⚙️ CONFIGURACIÓN VALIDADOR DE STOCK
+    const STOCK_COLCHON_ABS = 4;
+    const STOCK_UMBRAL_PCT = 0.10;
+    const STOCK_REGEX_ADVERTENCIA = /(UND en stock|Stock limitado|Sujeto a variaci[oó]n de stock|SIN STOCK)/i;
+
+    // ⚙️ CONFIGURACIÓN VALIDADOR DE DATOS MASIVOS
+    const VAL_CANT_MAX = 10000;
+    const VAL_PRECIO_MAX = 100000;
+    const VAL_DESC_MAX_SOSPECHOSO = 50;
+
+    // ⚙️ CONFIGURACIÓN VALIDADOR DE MÚLTIPLOS
+    const urlCSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS-WuktDtOMTW1WYOxP9hyEByU-B27p-2TZurq0PGJbeGvDBJ512pFFoXMKyTXD_jmP-KGxq3a6gjgW/pub?gid=1719535352&single=true&output=csv";
+    let baseDatosMult = new Map();
+
+    // 🎨 COLORES DE ESTADO
+    const COLOR_EXITO = '#d1fae5';
+    const COLOR_ERROR = '#fee2e2';
+    const COLOR_ALERTA = '#fef3c7';
+
+    const LISTA_GEN = [
+        { code: "GEN-157001", desc: "GEN-ELECTRICA-CONTROL Y SOFTWARE DE VISUALIZACION" },
+        { code: "GEN-157002", desc: "GEN-ELECTRICA-CONTROLADORES Y REDES" },
+        { code: "GEN-157003", desc: "GEN-ELECTRICA-ENTRADA Y SALIDA DISTRIBUIDA & PEQUENOS CONTROLADORES" },
+        { code: "GEN-157004", desc: "GEN-ELECTRICA-PLATAFORMA DE INFORMACION" },
+        { code: "GEN-157005", desc: "GEN-ELECTRICA-PEQUENOS CONTROLADORES LOGICOS" },
+        { code: "GEN-157006", desc: "GEN-ELECTRICA-CONTROL DE MOVIMIENTO" },
+        { code: "GEN-157007", desc: "GEN-ELECTRICA-NEGOCIOS DE SOLUCIONES DE INFORMACION" },
+        { code: "GEN-157008", desc: "GEN-ELECTRICA-CONTROL INDUSTRIAL" },
+        { code: "GEN-157009", desc: "GEN-ELECTRICA-SENSOR Y SEGURIDAD" },
+        { code: "GEN-157010", desc: "GEN-ELECTRICA-VARIADORES DE FRECUENCIA" },
+        { code: "GEN-157011", desc: "GEN-ELECTRICA-CENTRO CONTROL DE MOTORES" },
+        { code: "GEN-157012", desc: "GEN-ELECTRICA-CALIDAD DE ENERGIA" },
+        { code: "GEN-157013", desc: "GEN-ELECTRICA-DISTRIBUCION ELECTRICA" },
+        { code: "GEN-157014", desc: "GEN-ELECTRICA-MOTORES" },
+        { code: "GEN-157015", desc: "GEN-ELECTRICA-INSTRUMENTOS DE MEDIDA" },
+        { code: "GEN-157016", desc: "GEN-ELECTRICA-ILUMINACION" },
+        { code: "GEN-157017", desc: "GEN-ELECTRICA-PROTECCION Y SEGURIDAD" },
+        { code: "GEN-157018", desc: "GEN-ELECTRICA-MATERIALES ELECTRICOS" },
+        { code: "GEN-157019", desc: "GEN-ELECTRICA-SOLUCIONES IIOT" },
+        { code: "GEN-157020", desc: "GEN-ELECTRICA-LIFECYCLE SERVICES" },
+        { code: "GEN-157021", desc: "GEN-ELECTRICA-SERVICIOS ELECTRICOS" },
+        { code: "GEN-157023", desc: "GEN-ELECTRICA-INSTRUMENTACION DE CAMPO" }
+    ];
+
+    function cargarBaseDatosMult() {
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: urlCSV,
+            onload: function(response) {
+                let lineas = response.responseText.split(/\r?\n/);
+                baseDatosMult.clear();
+                for (let i = 1; i < lineas.length; i++) {
+                    let col = lineas[i].split(',');
+                    if (col.length >= 2) {
+                        let id = col[0].trim();
+                        let mult = parseInt(col[1].trim());
+                        if (id && !isNaN(mult)) baseDatosMult.set(id, mult);
+                    }
+                }
+            },
+            onerror: function() { mostrarToast("[-] Error al descargar BD de Múltiplos", false); }
+        });
+    }
+
+    let progressBar = document.createElement('div');
+    progressBar.style.cssText = 'position:fixed; top:0; left:0; width:0%; height:4px; background:#00bda5; z-index:100000; transition: width 0.2s ease; display:none;';
+    document.body.appendChild(progressBar);
+
+    let progressText = document.createElement('div');
+    progressText.style.cssText = 'position:fixed; top:15px; left:50%; transform:translateX(-50%); background:#33475b; color:white; padding:8px 16px; border-radius:4px; font-family:sans-serif; font-size:12px; font-weight:bold; z-index:100000; display:none; box-shadow:0 4px 10px rgba(0,0,0,0.3);';
+    document.body.appendChild(progressText);
+
+    function actualizarProgreso(actual, total, mensaje) {
+        if (actual === 0 && total === 0) {
+            progressBar.style.display = 'none'; progressText.style.display = 'none'; return;
+        }
+        let porcentaje = Math.round((actual / total) * 100);
+        progressBar.style.display = 'block'; progressBar.style.width = porcentaje + '%';
+        progressText.style.display = 'block'; progressText.innerHTML = "[~] " + mensaje + ": " + actual + " / " + total + " (" + porcentaje + "%)";
+    }
+
+    const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const esperarAleatorio = (min, max) => esperar(Math.floor(Math.random() * (max - min + 1) + min));
+
+    async function esperarElemento(selector, container = document, timeout = 5000) {
+        return new Promise((resolve) => {
+            if (container.querySelector(selector)) return resolve(container.querySelector(selector));
+            const observer = new MutationObserver(() => {
+                if (container.querySelector(selector)) {
+                    observer.disconnect(); resolve(container.querySelector(selector));
+                }
+            });
+            observer.observe(container === document ? document.body : container, { childList: true, subtree: true });
+            setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
+        });
+    }
+
+    // ==========================================
+    // 🚀 MOTORES DE INYECCIÓN V9.01 (Sin ESLint errors y con Fallback de coma)
+    // ==========================================
+    function setReactValue(element, value) {
+        if (!element) return;
+        if (element.hasAttribute('readonly')) element.removeAttribute('readonly');
+        if (element.hasAttribute('disabled')) element.removeAttribute('disabled');
+
+        const descElement = Object.getOwnPropertyDescriptor(element, 'value');
+        const valueSetter = descElement ? descElement.set : undefined;
+        
+        const prototype = Object.getPrototypeOf(element);
+        const descPrototype = Object.getOwnPropertyDescriptor(prototype, 'value');
+        const prototypeValueSetter = descPrototype ? descPrototype.set : undefined;
+
+        if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+            prototypeValueSetter.call(element, value);
+        } else if (valueSetter) {
+            valueSetter.call(element, value);
+        } else {
+            element.value = value;
+        }
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function inyectarHibrido(input, valorFloat, esCampoSimple = false) {
+        simularClic(input);
+        await esperar(100);
+
+        let strDot = valorFloat.toString();
+        let strComma = strDot.replace('.', ',');
+
+        input.focus();
+        input.select();
+        setReactValue(input, strDot);
+        await esperar(80);
+        
+        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
+            dispararEnter(input); input.blur(); return;
+        }
+
+        if (esCampoSimple) {
+             dispararEnter(input); input.blur(); return;
+        }
+
+        input.focus();
+        input.select();
+        setReactValue(input, strComma);
+        await esperar(80);
+        
+        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
+            dispararEnter(input); input.blur(); return;
+        }
+
+        input.focus();
+        input.select();
+        
+        document.execCommand('delete', false, null);
+        await esperar(50);
+
+        document.execCommand('insertText', false, strComma);
+        
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        await esperar(100);
+
+        dispararEnter(input);
+        input.blur();
+    }
+
+    function simularClic(elemento) {
+        if (!elemento) return;
+        elemento.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        elemento.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        elemento.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        elemento.click();
+    }
+
+    function clicMenu(elemento) {
+        if (!elemento) return;
+        elemento.focus();
+        elemento.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        elemento.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        elemento.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        try { elemento.click(); } catch (e) {}
+    }
+
+    function dispararEnter(elemento) {
+        if (!elemento) return;
+        elemento.focus();
+        const eventData = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        elemento.dispatchEvent(new KeyboardEvent('keydown', eventData));
+        elemento.dispatchEvent(new KeyboardEvent('keypress', eventData));
+        elemento.dispatchEvent(new KeyboardEvent('keyup', eventData));
+        elemento.blur();
+    }
+
+    async function seleccionarOpcionDropdownRapido(btnDesplegable, valorTexto) {
+        btnDesplegable.scrollIntoView({ behavior: 'auto', block: 'center' });
+        await esperar(50);
+        simularClic(btnDesplegable);
+        await esperar(150);
+        let inputs = document.querySelectorAll('input[role="combobox"], input[type="search"]');
+        let visibles = Array.from(inputs).filter(el => el.offsetParent !== null);
+        let buscadorMenu = visibles.pop();
+        if (buscadorMenu) {
+            setReactValue(buscadorMenu, valorTexto);
+            await esperar(80);
+            buscadorMenu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true }));
+            await esperar(20);
+            buscadorMenu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+            buscadorMenu.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', keyCode: 13, bubbles: true }));
+            buscadorMenu.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+            await esperar(60);
+            if (buscadorMenu.offsetParent !== null) document.body.click();
+        }
+    }
+
+    function parseSpanishNumber(str) {
+        if (str === null || str === undefined) return 0;
+        let limpio = str.toString().trim().replace(/[^0-9.,-]/g, '');
+        if (limpio === '') return 0;
+        if (limpio.includes('.') && limpio.includes(',')) {
+            if (limpio.indexOf('.') < limpio.indexOf(',')) limpio = limpio.replace(/\./g, '').replace(',', '.');
+            else limpio = limpio.replace(/,/g, '');
+        }
+        else if (limpio.includes(',')) limpio = limpio.replace(',', '.');
+        else if (limpio.includes('.')) {
+            let partes = limpio.split('.');
+            let decimales = partes[partes.length - 1];
+            if (decimales.length === 3) limpio = limpio.replace(/\./g, '');
+        }
+        return parseFloat(limpio) || 0;
+    }
+
+    function obtenerValorNumerico(elemento) {
+        if (!elemento) return 0;
+        let ariaVal = elemento.getAttribute('aria-valuenow');
+        if (ariaVal !== null && ariaVal !== "") return parseFloat(ariaVal) || 0;
+        return parseSpanishNumber(elemento.value);
+    }
+
+    function getIdentificadorFila(fila) {
+        let elemRef = fila.querySelector('span[data-property-sensitivity="none"], [data-test-id="property-input-hs_sku"], td[id*="hs_sku"]');
+        let elemNombre = fila.querySelector('[data-test-id="line-item-name-cell"], [data-selenium-test="line-item-name-cell"], div[data-test-id="truncated-object-label"]');
+        let ref = elemRef ? elemRef.textContent.trim() : "";
+        let nom = elemNombre ? elemNombre.textContent.trim() : "";
+        return ref.toUpperCase().includes("GEN-") ? (nom || ref) : (ref || nom);
+    }
+
+    function getInputCantidad(fila) {
+        return fila.querySelector('input[data-test-id="property-input-quantity"]') || fila.querySelector('input[role="spinbutton"]');
+    }
+
+    function escapeHTML(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function flash(boton) {
+        if (!boton) return;
+        const prev = boton.style.backgroundColor;
+        boton.style.backgroundColor = COLOR_EXITO;
+        setTimeout(() => { boton.style.backgroundColor = prev || "transparent"; }, 1200);
+    }
+
+    function procesarTextoPegado(texto) {
+        let mapa = {}; let mapaMulti = {}; let noEncontrados = new Set(); let duplicados = new Set();
+        texto.trim().split('\n').forEach(linea => {
+            let l = linea.trim(); if (!l) return;
+            let p = l.includes('\t') ? l.split('\t') : l.split(/\s{2,}/);
+            if (p.length < 2 && l.lastIndexOf(' ') !== -1) {
+                p = [l.substring(0, l.lastIndexOf(' ')), l.substring(l.lastIndexOf(' ') + 1)];
+            }
+            if (p.length >= 2) {
+                let ref = p[0].trim();
+                if (ref.toLowerCase() !== "ref." && ref.toLowerCase() !== "part number" && ref !== "") {
+                    let clave = ref.toUpperCase(); let valor = parseSpanishNumber(p[p.length - 1]);
+                    if (mapa[clave] !== undefined && mapa[clave] !== valor) duplicados.add(ref);
+                    mapa[clave] = valor;
+                    if (!mapaMulti[clave]) mapaMulti[clave] = [];
+                    mapaMulti[clave].push(valor);
+                    noEncontrados.add(clave);
+                }
+            }
+        });
+        return { mapa, mapaMulti, noEncontrados, duplicados };
+    }
+
+    function mostrarToast(mensaje, esExito = true) {
+        let toast = document.createElement("div");
+        toast.textContent = mensaje;
+        toast.style.position = "fixed"; toast.style.bottom = "30px"; toast.style.right = "30px";
+        toast.style.backgroundColor = esExito ? "#00bda5" : "#ff3333"; toast.style.color = "white";
+        toast.style.padding = "15px 20px"; toast.style.borderRadius = "5px"; toast.style.boxShadow = "0 5px 15px rgba(0,0,0,0.2)";
+        toast.style.zIndex = "10000"; toast.style.fontFamily = "sans-serif"; toast.style.fontSize = "13px"; toast.style.whiteSpace = "pre-line";
+        toast.style.opacity = "0"; toast.style.transition = "opacity 0.4s";
+        document.body.appendChild(toast);
+        setTimeout(() => { toast.style.opacity = "1"; }, 10);
+        setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => { toast.remove(); }, 400); }, esExito ? 4000 : 9000);
+    }
+
+    function convertirAHTML(texto) {
+        if (!texto) return "";
+        return texto.split('\n').map(l => {
+            l = l.trim(); if (!l) return "";
+            l = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (/^[\-\*•]\s+/.test(l)) l = l.replace(/^[\-\*•]\s+/, '&bull; ');
+            // Uso estandar sin $ por si se pierden en el copiado
+            l = l.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/_(.*?)_/g, '<em>$1</em>').replace(/\*(.*?)\*/g, '<em>$1</em>');
+            return l;
+        }).filter(l => l.length > 0).join(' <br> ');
+    }
+
+    function parseMultipleGenerics(text) {
+        let lines = text.split('\n'); let items = []; let currentItem = null;
+        for (let line of lines) {
+            let trimmed = line.trim();
+            if (trimmed.includes('@@')) {
+                if (currentItem) items.push(currentItem);
+                let parts = trimmed.split('@@');
+                currentItem = { pn: parts[0].trim(), descLines: [parts.slice(1).join('@@')] };
+            } else if (currentItem && trimmed !== '') {
+                currentItem.descLines.push(trimmed);
+            }
+        }
+        if (currentItem) items.push(currentItem);
+        return items;
+    }
+
+    function solicitarTextoMultilinea(tituloModalPersonalizado) {
+        return new Promise((resolve) => {
+            let modalGen = document.createElement('div');
+            modalGen.className = 'modal-precision';
+            modalGen.innerHTML = '<div class="modal-content-precision">' +
+                '<h4 style="margin-top:0; color:#33475b;"><span class="icon-sobrio">[*]</span> Formateador (' + tituloModalPersonalizado + ')</h4>' +
+                '<p style="font-size:11px; color:#516f90; margin-bottom:8px;">• Negrita: <b>**texto**</b> | • Cursiva: <i>*texto*</i> | • Viñeta: <b>- ítem</b></p>' +
+                '<textarea id="txtEntradaPrecision" rows="8" style="width:100%; border:1px solid #cbd6e2; border-radius:4px; padding:8px; font-size:12px; box-sizing:border-box;" placeholder="PN1@@Especificaciones\ncomentario 1\nPN2@@Otra info..."></textarea>' +
+                '<div style="margin-top:8px;"><span style="font-size:10px; font-weight:bold; color:#516f90;">VISTA PREVIA:</span><div id="previewPrecision" class="preview-box"><i>Aparecerá aquí...</i></div></div>' +
+                '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">' +
+                    '<span style="font-size:10px; color:#7c98b6;">Presiona <b>Ctrl + Enter</b> para enviar</span>' +
+                    '<div style="display:flex; gap:8px;">' +
+                        '<button id="btnCancelarModalGen" style="padding:6px 12px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>' +
+                        '<button id="btnAceptarModalGen" style="padding:6px 12px; background:#00a4bd; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">Procesar y Agregar</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+            document.body.appendChild(modalGen);
+            let txtArea = document.getElementById('txtEntradaPrecision');
+            let preview = document.getElementById('previewPrecision');
+
+            txtArea.oninput = () => {
+                let val = txtArea.value.trim();
+                if (!val) { preview.innerHTML = '<i>Aparecerá aquí...</i>'; return; }
+                let items = parseMultipleGenerics(val);
+                if (items.length === 0) { preview.innerHTML = '<i>Formato inválido. Usa P/N@@Descripción</i>'; return; }
+                let html = "<b>[i] " + items.length + " Elemento(s) detectado(s):</b><br><br>";
+                items.forEach((item, idx) => {
+                    let descHTML = convertirAHTML(item.descLines.join('\n'));
+                    html += '<b style="color:#00a4bd;">' + (idx + 1) + '. [' + item.pn + ']</b><br><div style="padding-left:10px; border-left:2px solid #cbd6e2; margin-top:4px; font-size:11px;">' + descHTML + '</div><br>';
+                });
+                preview.innerHTML = html;
+            };
+
+            txtArea.onkeydown = (e) => { if (e.ctrlKey && e.key === 'Enter') document.getElementById('btnAceptarModalGen').click(); };
+            txtArea.focus();
+
+            document.getElementById('btnCancelarModalGen').onclick = () => { modalGen.remove(); resolve(null); };
+            document.getElementById('btnAceptarModalGen').onclick = () => { let val = txtArea.value.trim(); modalGen.remove(); resolve(val); };
+        });
+    }
+
+    function copiadoRapidoPNs() {
+        let res = [];
+        document.querySelectorAll('tbody tr').forEach(f => {
+            let iQty = getInputCantidad(f);
+            if (!iQty) return;
+            let idFinal = getIdentificadorFila(f);
+            let cant = obtenerValorNumerico(iQty);
+            if (idFinal) res.push(idFinal + "\t" + cant);
+        });
+        if (res.length === 0) { mostrarToast("[-] No se encontraron PNs.", false); return; }
+        try { GM_setClipboard(res.join('\n')); }
+        catch (e) { mostrarToast("[-] No se pudo copiar (permiso).", false); return; }
+        flash(btnExtras);
+    }
+
+    // ==========================================
+    // ESTILOS E INTERFAZ UI
+    // ==========================================
+    let style = document.createElement('style');
+    style.innerHTML = `
+        @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .hs-side-panel { animation: slideInRight 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) forwards; }
+        .hs-btn-primary { background-color: #ff7a59; color: white; border: 1px solid #ff7a59; }
+        .hs-btn-primary:hover { background-color: #ff8f73; border-color: #ff8f73; }
+        .hs-btn-secondary { background-color: #f5f8fa; color: #33475b; border: 1px solid #cbd6e2; }
+        .hs-btn-secondary:hover { background-color: #eaf0f6; }
+        .hs-menu-item:hover { background-color: #f5f8fa; }
+        .hs-menu-title { padding: 8px 16px 4px; font-size: 10px; font-weight: bold; color: #7c98b6; text-transform: uppercase; border-bottom: 1px solid #eaf0f6; margin-bottom: 4px; }
+        .btn-generico { background-color: #f5f8fa; border: 1px solid #cbd6e2; padding: 6px 10px; margin: 2px 0; border-radius: 4px; cursor: pointer; text-align: left; width: 100%; font-family: sans-serif; font-size: 11px; transition: background-color 0.2s;}
+        .btn-generico:hover { background-color: #eaf0f6; border-color: #9cb1c6; }
+        .modal-precision { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 10000; display: flex; justify-content: center; align-items: center; }
+        .modal-content-precision { background: white; padding: 20px; border-radius: 8px; width: 550px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); font-family: sans-serif; }
+        .preview-box { border: 1px dashed #cbd6e2; background: #f8fafc; padding: 8px 12px; border-radius: 4px; font-size: 12px; max-height: 180px; overflow-y: auto; color: #33475b; }
+        .dock-group { display: flex; align-items: center; background: white; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); border: 1px solid #cbd6e2; padding: 4px; gap: 4px; position: relative; }
+        .dock-btn { padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 16px; border: none; transition: background 0.2s; color: #33475b; font-weight: 600; }
+        .dock-btn:hover { background: #f5f8fa; }
+        .split-input { width: 100%; padding: 6px 8px; border: 1px solid #cbd6e2; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
+        .split-input:focus { outline: none; border-color: #00a4bd; box-shadow: 0 0 0 2px rgba(0,164,189,0.15); }
+        .icon-sobrio { font-family: monospace; font-weight: bold; color: #516f90; }
+        .alerta-mult-badge { display:inline-block; margin-left:8px; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold; color:white; }
+    `;
+    document.head.appendChild(style);
+
+    let dockContenedor = document.createElement("div");
+    dockContenedor.id = 'hs-precision-dock';
+    dockContenedor.style.cssText = "position:fixed; bottom:40px; left:50%; transform:translateX(-50%); z-index:9998; display:none; align-items:center; gap:10px;";
+
+    let dockGroup = document.createElement("div");
+    dockGroup.className = "dock-group";
+
+    let btnExtras = document.createElement("button");
+    btnExtras.className = "dock-btn"; btnExtras.innerHTML = "Extras ▾"; btnExtras.title = "Herramientas secundarias";
+
+    let separador1 = document.createElement("div"); separador1.style.cssText = "width:1px; height:20px; background-color:#cbd6e2;";
+
+    let btnClonarGen = document.createElement("button");
+    btnClonarGen.className = "dock-btn"; btnClonarGen.innerHTML = "[C]"; btnClonarGen.title = "Clonador Múltiple";
+
+    let btnGen = document.createElement("button");
+    btnGen.className = "dock-btn"; btnGen.innerHTML = "[G]"; btnGen.title = "Añadir Genérico (Alt+G)";
+
+    let separador2 = document.createElement("div"); separador2.style.cssText = "width:1px; height:20px; background-color:#cbd6e2;";
+
+    let btnSuite = document.createElement("button");
+    btnSuite.className = "dock-btn"; btnSuite.innerHTML = "Suite ▾"; btnSuite.title = "Herramientas frecuentes";
+
+    dockGroup.append(btnExtras, separador1, btnClonarGen, btnGen, separador2, btnSuite);
+    dockContenedor.appendChild(dockGroup);
+    document.body.appendChild(dockContenedor);
+
+    let menuGen = document.createElement("div");
+    menuGen.style.cssText = "display:none; position:absolute; bottom:55px; left:50%; transform:translateX(-50%); flex-direction:column; background:white; padding:10px; border-radius:6px; box-shadow:0px 10px 25px rgba(0,0,0,0.25); border:1px solid #cbd6e2; width:300px; z-index: 9999;";
+    let headerGen = document.createElement("div");
+    headerGen.innerHTML = "<span class='icon-sobrio'>[*]</span> <b style='color:#33475b; font-size:12px;'>Familia GEN-ELÉCTRICA</b>";
+    headerGen.style.cssText = "padding-bottom:8px; margin-bottom:4px; border-bottom:1px solid #cbd6e2; text-align:center;";
+    menuGen.appendChild(headerGen);
+    let contenedorListaGen = document.createElement("div"); contenedorListaGen.style.cssText = "max-height:300px; overflow-y:auto;";
+    let fragmento = document.createDocumentFragment();
+    LISTA_GEN.forEach(item => {
+        let btnItem = document.createElement("button"); btnItem.className = "btn-generico";
+        let nombreCorto = item.desc.replace("GEN-ELECTRICA-", "").trim();
+        // CONCATENACIÓN TRADICIONAL
+        btnItem.innerHTML = '<b style="color:#33475b; font-size:11px;">' + nombreCorto + '</b><br><span style="color:#7c98b6; font-size:10px;">' + item.code + '</span>';
+        btnItem.dataset.codigo = item.code; fragmento.appendChild(btnItem);
+    });
+    contenedorListaGen.appendChild(fragmento); menuGen.appendChild(contenedorListaGen); dockGroup.appendChild(menuGen);
+
+    let menuExtras = document.createElement("div");
+    menuExtras.style.cssText = "display:none; position:absolute; bottom:55px; left:0; flex-direction:column; background:white; padding:4px 0; border-radius:4px; box-shadow:0 8px 24px rgba(0,0,0,0.15); border:1px solid #cbd6e2; width:220px; z-index: 9999;";
+
+    let menuSuite = document.createElement("div");
+    menuSuite.style.cssText = "display:none; position:absolute; bottom:55px; right:0; flex-direction:column; background:white; padding:4px 0; border-radius:4px; box-shadow:0 8px 24px rgba(0,0,0,0.15); border:1px solid #cbd6e2; width:220px; z-index: 9999;";
+
+    function crearOptionBtn(texto, icono) {
+        let b = document.createElement("button"); b.className = "hs-menu-item";
+        // CONCATENACIÓN TRADICIONAL
+        b.innerHTML = '<span class="icon-sobrio">' + icono + '</span> <span style="margin-left:8px;">' + texto + '</span>';
+        b.style.cssText = "padding:8px 16px; background-color:transparent; color:#33475b; border:none; cursor:pointer; font-weight:500; text-align:left; font-size:13px; width:100%; display:flex; align-items:center;";
+        return b;
+    }
+
+    function crearTituloMenu(texto) {
+        let d = document.createElement("div"); d.className = "hs-menu-title"; d.textContent = texto; return d;
+    }
+
+    let optCutSheetColab = crearOptionBtn("Cut Sheets (Colab)", "[D]");
+    let optRockwell = crearOptionBtn("Ciclo Rockwell", "[R]");
+    let optExtraer = crearOptionBtn("Copiar PNs (Alt+C)", "[C]");
+    let optAuditoria = crearOptionBtn("Auditar Cotización", "[A]");
+    let optBorrarPorPN = crearOptionBtn("Borrar por PN", "[X]"); optBorrarPorPN.style.color = "#ff3333";
+    let optValMult = crearOptionBtn("Val. Mult.", "[M]");
+
+    menuExtras.append(crearTituloMenu("Consultas"), optCutSheetColab, optRockwell, optExtraer, optAuditoria, crearTituloMenu("Acciones"), optBorrarPorPN, optValMult);
+
+    let optActCant = crearOptionBtn("Act. Cantidades", "[C]");
+    let optActPrecio = crearOptionBtn("Act. Precios", "[P]");
+    let optAplicarDesc = crearOptionBtn("Act. Des. %", "[%]");
+    let optActTiempo = crearOptionBtn("Act. Tiempo Entrega", "[T]");
+    let optBorrar = crearOptionBtn("Borrar Todo", "[X]"); optBorrar.style.color = "#ff3333";
+    let optStock = crearOptionBtn("Validar Stock", "[S]");
+    let optTiempos = crearOptionBtn("LeadTime (Alt+T)", "[T]");
+
+    menuSuite.append(optActCant, optActPrecio, optAplicarDesc, optActTiempo, optBorrar, optStock, optTiempos);
+    dockGroup.append(menuExtras, menuSuite);
+
+    function toggleMenu(target, other1, other2) {
+        target.style.display = target.style.display === "none" ? "flex" : "none";
+        other1.style.display = "none";
+        other2.style.display = "none";
+    }
+
+    btnExtras.onclick = (e) => { e.stopPropagation(); toggleMenu(menuExtras, menuSuite, menuGen); };
+    btnSuite.onclick = (e) => { e.stopPropagation(); toggleMenu(menuSuite, menuExtras, menuGen); };
+    btnGen.onclick = (e) => { e.stopPropagation(); toggleMenu(menuGen, menuExtras, menuSuite); };
+
+    document.addEventListener('click', () => {
+        menuExtras.style.display = "none";
+        menuSuite.style.display = "none";
+        menuGen.style.display = "none";
+    });
+
+    let overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(45,62,80,0.4); z-index:9999; display:none; justify-content:flex-end;";
+    let modal = document.createElement("div"); modal.className = "hs-side-panel";
+    modal.style.cssText = "background-color:white; padding:30px 25px; width:450px; height:100vh; box-shadow:-5px 0 25px rgba(0,0,0,0.15); position:relative; display:flex; flex-direction:column; gap:15px;";
+
+    let btnCerrar = document.createElement("button"); btnCerrar.innerHTML = "X";
+    btnCerrar.style.cssText = "position:absolute; top:20px; right:20px; background:none; border:none; font-size:16px; cursor:pointer; color:#7c98b6;";
+    let tituloModal = document.createElement("h3"); tituloModal.style.cssText = "margin:0; color:#33475b; font-size:18px;";
+    let contenidoModal = document.createElement("div");
+
+    modal.append(btnCerrar, tituloModal, contenidoModal); overlay.appendChild(modal); document.body.appendChild(overlay);
+    btnCerrar.onclick = () => { overlay.style.display = "none"; };
+
+    function revisarURL() { dockContenedor.style.display = window.location.href.includes("/line-items/") ? "flex" : "none"; }
+    const pushState = history.pushState; history.pushState = function() { pushState.apply(history, arguments); setTimeout(revisarURL, 500); };
+    const replaceState = history.replaceState; history.replaceState = function() { replaceState.apply(history, arguments); setTimeout(revisarURL, 500); };
+    window.addEventListener('popstate', () => { setTimeout(revisarURL, 500); }); revisarURL();
+
+    document.addEventListener('keydown', (e) => {
+        if (!window.location.href.includes('/line-items/')) return;
+        if (e.altKey) {
+            let k = e.key.toLowerCase();
+            if (k === 't') { e.preventDefault(); optTiempos.click(); }
+            if (k === 's') { e.preventDefault(); optStock.click(); }
+            if (k === 'g') { e.preventDefault(); btnGen.click(); }
+            if (k === 'c') { e.preventDefault(); copiadoRapidoPNs(); }
+        }
+    });
+
+    // ==========================================
+    // LÓGICA VALIDADOR DE MÚLTIPLOS Y STOCK
+    // ==========================================
+    optValMult.onclick = () => {
+        if (baseDatosMult.size === 0) {
+            mostrarToast("[!] La BD de Múltiplos aún no carga. Reintentando...", false);
+            cargarBaseDatosMult();
+            return;
+        }
+
+        let filas = document.querySelectorAll('tbody tr');
+        let procesados = 0; let errores = 0;
+
+        for (let idx = 0; idx < filas.length; idx++) {
+            let fila = filas[idx];
+            let idFinal = getIdentificadorFila(fila);
+            if (!idFinal) continue;
+
+            let mult = baseDatosMult.get(idFinal) || 1;
+            let inputStock = fila.querySelector('input[data-test-id*="stock_pe"]');
+            let inputQty = getInputCantidad(fila);
+            if (!inputQty) continue;
+
+            let stock = inputStock ? obtenerValorNumerico(inputStock) : 0;
+            let qty = obtenerValorNumerico(inputQty);
+            let esValido = true; let mensajeError = "";
+
+            if (qty > stock) {
+                let faltante = qty - stock;
+                if (faltante % mult !== 0) {
+                    esValido = false;
+                    if (stock === 0) mensajeError = "Aumentar a múltiplo de " + mult;
+                    else mensajeError = "Pedir " + stock + " (Stock) + mult. de " + mult;
+                }
+            }
+
+            fila.querySelectorAll('.alerta-mult-badge').forEach(b => b.remove());
+            if (fila.style.backgroundColor === 'rgb(254, 226, 226)' || fila.style.backgroundColor === COLOR_ERROR) {
+                fila.style.backgroundColor = "";
+                fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = ""; });
+            }
+
+            let celdaNombre = fila.querySelector('[data-test-id="line-item-name-cell"], [data-selenium-test="line-item-name-cell"]');
+            if (esValido) {
+                if (mult > 1 && celdaNombre) {
+                    let badge = document.createElement('span');
+                    badge.className = 'alerta-mult-badge'; badge.style.backgroundColor = '#00bda5'; badge.innerText = "Mult: " + mult + " OK";
+                    celdaNombre.appendChild(badge);
+                }
+                procesados++;
+            } else {
+                fila.style.backgroundColor = COLOR_ERROR;
+                fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
+                if (celdaNombre) {
+                    let badge = document.createElement('span');
+                    badge.className = 'alerta-mult-badge'; badge.style.backgroundColor = '#ff3333'; badge.innerText = "[!] " + mensajeError;
+                    celdaNombre.appendChild(badge);
+                }
+                errores++;
+            }
+        }
+
+        if (errores === 0) mostrarToast("[OK] " + procesados + " productos validados. ¡Todo perfecto!");
+        else mostrarToast("[!] Revisión completada: " + errores + " filas requieren atención.", false);
+    };
+
+    optAuditoria.onclick = () => {
+        let filas = document.querySelectorAll('tbody tr'); let reporteErrores = [];
+        for (let idx = 0; idx < filas.length; idx++) {
+            let fila = filas[idx];
+            let iQty = getInputCantidad(fila);
+            if (!iQty) continue;
+            let pn = getIdentificadorFila(fila) || "Fila " + (idx + 1); let erroresFila = [];
+            let iTime = fila.querySelector('input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]');
+            let btnDays = fila.querySelector('button[data-test-id="property-input-dias___semanas_entrega"]');
+            let iPrice = fila.querySelector('input[data-test-id="property-input-price"]');
+            let btnMarca = fila.querySelector('button[data-test-id="property-input-marca"], [data-test-id="property-input-marca"]');
+
+            if (obtenerValorNumerico(iQty) === 0) erroresFila.push("Cantidad 0 o vacía");
+            if (obtenerValorNumerico(iTime) === 0) erroresFila.push("Falta Tiempo");
+            if (btnDays && (!btnDays.textContent || btnDays.textContent.trim() === "")) erroresFila.push("Faltan Días/Sem");
+            if (obtenerValorNumerico(iPrice) === 0) erroresFila.push("Precio $0.00");
+            if (btnMarca) {
+                let textMarca = btnMarca.textContent.trim().toUpperCase();
+                if (textMarca === "" || textMarca.includes("PRECISION")) erroresFila.push("Marca incorrecta");
+            }
+            if (erroresFila.length > 0) reporteErrores.push('<b style="color:#33475b;">' + pn + ':</b> <span style="color:#ff3333;">' + erroresFila.join(" | ") + '</span>');
+        }
+
+        tituloModal.innerHTML = "[A] Revisión";
+        if (reporteErrores.length === 0) {
+            contenidoModal.innerHTML = '<div style="padding:15px; background-color:' + COLOR_EXITO + '; color:#00bda5; border:1px solid #00bda5; border-radius:4px; font-weight:bold; text-align:center;">¡Todo perfecto!</div>';
+        } else {
+            contenidoModal.innerHTML = '<div style="margin-bottom:10px; font-size:13px; color:#ff3333; font-weight:bold;">Errores en ' + reporteErrores.length + ' fila(s):</div><div style="border:1px solid #ff3333; background-color:' + COLOR_ERROR + '; padding:12px; border-radius:4px; max-height:400px; overflow-y:auto; font-size:13px; line-height:1.6;">' + reporteErrores.join('<br>') + '</div>';
+        }
+        overlay.style.display = "flex";
+    };
+
+    function mostrarFallaClonacion(items, failedIndex, failedPN, razon) {
+        let modalResume = document.createElement('div');
+        modalResume.className = 'modal-precision';
+        modalResume.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff3333;">' +
+            '<h3 style="margin-top:0; color:#ff3333;">[X] Falla</h3>' +
+            '<p style="font-size:13px; color:#33475b;">Se detuvo en el ítem <b>' + (failedIndex + 1) + ' de ' + items.length + '</b> [P/N: ' + failedPN + '].</p>' +
+            '<p style="font-size:11px; color:#516f90;"><b>Razón:</b> ' + razon + '</p>' +
+            '<div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;">' +
+                '<button id="btnCancelarResume" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>' +
+                '<button id="btnReanudarClonacion" style="padding:8px 16px; background:#8e44ad; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[C] Reanudar</button>' +
+            '</div>' +
+        '</div>';
+        document.body.appendChild(modalResume);
+        document.getElementById('btnCancelarResume').onclick = () => { modalResume.remove(); btnClonarGen.innerHTML = "[C]"; btnClonarGen.style.backgroundColor = "transparent"; };
+        document.getElementById('btnReanudarClonacion').onclick = () => { modalResume.remove(); ejecutarClonadoMasivo(items, failedIndex); };
+    }
+
+    async function ejecutarFlujoGen(itemGen, nombrePN, textoHTML, textoRaw) {
+        let btnDesplegable = Array.from(document.querySelectorAll('span')).find(el => el.textContent.includes('Añadir elemento de pedido'));
+        if (btnDesplegable) simularClic(btnDesplegable.closest('button'));
+
+        let optBiblioteca = await esperarElemento('i18n-string[data-key="lineItems.addLineItemButton.fromProductLibrary"]');
+        if (optBiblioteca) simularClic(optBiblioteca.closest('button, li'));
+
+        let buscador = await esperarElemento('input[data-test-id="add-line-items-modal-search"], input[data-selenium-test="add-line-items-modal-search"]');
+        if (buscador) { setReactValue(buscador, itemGen.code); buscador.focus(); dispararEnter(buscador); }
+
+        let filaResultado = await esperarElemento('tr[data-test-id="add-line-item-option"]');
+        if (filaResultado) {
+            let labelToClick = filaResultado.querySelector('label');
+            if (labelToClick) { simularClic(labelToClick); await esperar(300); }
+        }
+
+        let btnAgregar = await esperarElemento('button[data-test-id="add-line-items"], button[data-selenium-test="add-line-items"]');
+        if (btnAgregar && !btnAgregar.disabled) {
+            simularClic(btnAgregar); dispararEnter(btnAgregar);
+            for (let i = 0; i < 50; i++) {
+                if (!document.body.contains(btnAgregar)) { await esperar(400); break; }
+                await esperar(150);
+            }
+        }
+
+        let filaNueva = null;
+        for (let i = 0; i < 20; i++) {
+            let filasTablaPrincipal = Array.from(document.querySelectorAll('tbody tr'));
+            filaNueva = filasTablaPrincipal.reverse().find(tr => tr.textContent.includes(itemGen.desc) || tr.textContent.includes(itemGen.code));
+            if (filaNueva) break; await esperar(250);
+        }
+
+        if (filaNueva) {
+            filaNueva.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await esperar(300);
+
+            let nameCell = filaNueva.querySelector('[data-test-id="line-item-name-cell"]');
+            let panelAbierto = false;
+            if (nameCell) {
+                clicMenu(nameCell.closest('button') || nameCell);
+                for (let w = 0; w < 10; w++) {
+                    if (document.querySelector('textarea[data-test-id="line-item-name-input"]')) { panelAbierto = true; break; }
+                    await esperar(200);
+                }
+            }
+
+            if (!panelAbierto) {
+                filaNueva.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                await esperar(200);
+                let btnAcciones = filaNueva.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || filaNueva.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+                if (btnAcciones) {
+                    simularClic(btnAcciones);
+                    let optEditar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.edit"]');
+                    if (optEditar) clicMenu(optEditar.closest('button, li, a, [role="menuitem"]'));
+                }
+            }
+
+            let inputNombre = null; let inputDescGen = null;
+            for (let w = 0; w < 30; w++) {
+                if (!inputNombre) inputNombre = document.querySelector('textarea[data-test-id="line-item-name-input"]');
+                if (!inputDescGen) inputDescGen = document.querySelector('textarea[data-test-id="property-input-code_desc_gen"]');
+                if (inputNombre && inputDescGen) break; await esperar(200);
+            }
+
+            if (!inputNombre) { mostrarToast("[-] Error en panel.", false); return; }
+
+            setReactValue(inputNombre, nombrePN);
+            dispararEnter(inputNombre); await esperar(200);
+
+            if (inputDescGen) { setReactValue(inputDescGen, nombrePN + "@@" + textoHTML); dispararEnter(inputDescGen); }
+
+            await esperar(500);
+            let elemGuardar = null;
+            for (let attempt = 0; attempt < 20; attempt++) {
+                let i18n = document.querySelector('i18n-string[data-key="products.edit.footer.save"]');
+                if (i18n) elemGuardar = i18n.closest('button');
+                if (!elemGuardar) elemGuardar = document.querySelector('button[data-selenium-test="base-dialog-confirm-btn"]');
+                if (!elemGuardar) {
+                    let btns = Array.from(document.querySelectorAll('button'));
+                    elemGuardar = btns.find(b => b.textContent.trim() === 'Guardar');
+                }
+                if (elemGuardar && !elemGuardar.disabled) break;
+                await esperar(300);
+            }
+
+            if (elemGuardar && !elemGuardar.disabled) {
+                simularClic(elemGuardar);
+                for (let w = 0; w < 30; w++) {
+                    if (!document.body.contains(elemGuardar) && !document.querySelector('textarea[data-test-id="line-item-name-input"]')) break;
+                    await esperar(150);
+                }
+                filaNueva.style.backgroundColor = COLOR_EXITO;
+                filaNueva.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_EXITO; });
+            }
+        }
+    }
+
+    async function ejecutarClonadoMasivo(items, startIndex = 0) {
+        btnClonarGen.innerHTML = "[...]"; btnClonarGen.style.backgroundColor = "#e59a10";
+        actualizarProgreso(0, items.length, "Clonando");
+
+        for (let i = startIndex; i < items.length; i++) {
+            actualizarProgreso(i + 1, items.length, "Clonando");
+            let item = items[i];
+            let textoRaw = item.descLines.join('\n');
+            let textoHTML = convertirAHTML(textoRaw);
+            let filas = document.querySelectorAll('tbody tr'); let filaParaClonar = null;
+
+            for (let f = filas.length - 1; f >= 0; f--) {
+                let elemRef = filas[f].querySelector('span[data-property-sensitivity="none"], td[id*="hs_sku"]');
+                if (elemRef && elemRef.textContent.trim().toUpperCase().includes("GEN-")) { filaParaClonar = filas[f]; break; }
+            }
+
+            if (!filaParaClonar) { mostrarFallaClonacion(items, i, item.pn, "No hay fila base 'GEN-'."); return; }
+            filaParaClonar.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            filaParaClonar.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            await esperar(300);
+
+            let btnAcciones = filaParaClonar.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || filaParaClonar.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+            if (btnAcciones) {
+                simularClic(btnAcciones);
+                let btnClonar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.clone"]');
+                if (btnClonar) {
+                    clicMenu(btnClonar.closest('button, li, a, [role="menuitem"]'));
+                    let inputNombre = null; let inputDescGen = null;
+                    for (let w = 0; w < 30; w++) {
+                        if (!inputNombre) inputNombre = document.querySelector('textarea[data-test-id="line-item-name-input"]');
+                        if (!inputDescGen) inputDescGen = document.querySelector('textarea[data-test-id="property-input-code_desc_gen"]');
+                        if (inputNombre && inputDescGen) break; await esperar(250);
+                    }
+                    if (!inputNombre) { mostrarFallaClonacion(items, i, item.pn, "Panel no cargó."); return; }
+
+                    setReactValue(inputNombre, item.pn); dispararEnter(inputNombre); await esperar(200);
+                    if (inputDescGen) { setReactValue(inputDescGen, item.pn + "@@" + textoHTML); dispararEnter(inputDescGen); }
+
+                    await esperar(500);
+                    let elemGuardar = null;
+                    for (let attempt = 0; attempt < 20; attempt++) {
+                        let i18n = document.querySelector('i18n-string[data-key="products.edit.footer.save"]');
+                        if (i18n) elemGuardar = i18n.closest('button');
+                        if (!elemGuardar) elemGuardar = document.querySelector('button[data-selenium-test="base-dialog-confirm-btn"]');
+                        if (!elemGuardar) {
+                            let btns = Array.from(document.querySelectorAll('button'));
+                            elemGuardar = btns.find(b => b.textContent.trim() === 'Guardar');
+                        }
+                        if (elemGuardar && !elemGuardar.disabled) break;
+                        await esperar(300);
+                    }
+
+                    if (elemGuardar && !elemGuardar.disabled) {
+                        simularClic(elemGuardar);
+                        for (let w = 0; w < 30; w++) {
+                            if (!document.body.contains(elemGuardar) && !document.querySelector('textarea[data-test-id="line-item-name-input"]')) break;
+                            await esperar(150);
+                        }
+                    } else { mostrarFallaClonacion(items, i, item.pn, "Botón 'Guardar' no se habilitó."); return; }
+                } else { mostrarFallaClonacion(items, i, item.pn, "No se encontró 'Clonar'."); return; }
+            } else { mostrarFallaClonacion(items, i, item.pn, "No se encontró menú Acciones."); return; }
+        }
+
+        actualizarProgreso(0, 0, "");
+        btnClonarGen.innerHTML = "[C]"; btnClonarGen.style.backgroundColor = "transparent"; flash(btnClonarGen);
+    }
+
+    btnClonarGen.onclick = async () => {
+        let filas = document.querySelectorAll('tbody tr');
+        let codigoGenDetectado = "GEN-"; let ultimaFilaGen = null;
+        for (let i = filas.length - 1; i >= 0; i--) {
+            let elemRef = filas[i].querySelector('span[data-property-sensitivity="none"], td[id*="hs_sku"]');
+            let refTexto = elemRef ? elemRef.textContent.trim().toUpperCase() : "";
+            if (refTexto.includes("GEN-")) {
+                ultimaFilaGen = filas[i];
+                let match = refTexto.match(/GEN-\d+/i);
+                if (match) codigoGenDetectado = match[0].toUpperCase();
+                break;
+            }
+        }
+        if (!ultimaFilaGen) { mostrarToast("[-] Falta 1 Genérico base.", false); return; }
+        let datosUsuario = await solicitarTextoMultilinea(`Base: ${codigoGenDetectado}`);
+        if (datosUsuario && datosUsuario.includes("@@")) ejecutarClonadoMasivo(parseMultipleGenerics(datosUsuario), 0);
+        else if (datosUsuario) mostrarToast("[-] Falta separador '@@'.", false);
+    };
+
+    document.addEventListener('click', async (e) => {
+        let btn = e.target.closest('.btn-generico');
+        if (!btn) return;
+        menuGen.style.display = "none";
+        let itemGen = LISTA_GEN.find(i => i.code === btn.dataset.codigo);
+        if (itemGen) {
+            let datosUsuario = await solicitarTextoMultilinea(itemGen.code);
+            if (datosUsuario && datosUsuario.includes("@@")) {
+                let items = parseMultipleGenerics(datosUsuario);
+                if (items.length > 0) {
+                    btnGen.innerHTML = "[...]"; btnGen.style.backgroundColor = "#e59a10";
+                    let firstRaw = items[0].descLines.join('\n');
+                    let firstHTML = convertirAHTML(firstRaw);
+
+                    await ejecutarFlujoGen(itemGen, items[0].pn, firstHTML, firstRaw);
+                    if (items.length > 1) await ejecutarClonadoMasivo(items.slice(1), 0);
+
+                    btnGen.innerHTML = "[OK]"; btnGen.style.backgroundColor = COLOR_EXITO;
+                    setTimeout(() => { btnGen.innerHTML = "[G]"; btnGen.style.backgroundColor = "transparent"; }, 2000);
+                }
+            }
+        }
+    });
+
+    async function consultarRockwellConReintento(pn, intentos = 3) {
+        for (let i = 0; i < intentos; i++) {
+            try {
+                return await new Promise((res, rej) => {
+                    let urlSegura = 'https://www.rockwellautomation.com/en-us/products/details.' + pn.toLowerCase() + '.html';
+                    GM_xmlhttpRequest({
+                        method: "GET",
+                        url: urlSegura,
+                        timeout: 12000,
+                        headers: {
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language": "en-US,en;q=0.5",
+                            "Cache-Control": "no-cache",
+                            "User-Agent": navigator.userAgent,
+                            "Referer": "https://www.rockwellautomation.com/en-us/products.html"
+                        },
+                        onload: r => {
+                            if (r.status === 200) {
+                                let doc = new DOMParser().parseFromString(r.responseText, "text/html");
+                                let st = doc.querySelector('span.ra-product-new__product-detail-options-status-value');
+                                res(st ? st.textContent.trim() : "No Encontrado");
+                            } else res("No Encontrado");
+                        },
+                        onerror: () => rej("Error Conexión"),
+                        ontimeout: () => rej("Timeout")
+                    });
+                });
+            } catch (e) {
+                if (i === intentos - 1) return "Error Conexión";
+                await esperarAleatorio(1500, 3000);
+            }
+        }
+    }
+
+    optRockwell.onclick = async () => {
+        tituloModal.innerHTML = "[R] Rockwell";
+        contenidoModal.innerHTML = `<div id="recRockwell" style="max-height:350px; overflow-y:auto; border:1px solid #cbd6e2; padding:15px; font-size:13px; border-radius:4px;">Buscando... [...]</div>`;
+        overlay.style.display = "flex";
+
+        let rec = document.getElementById("recRockwell");
+        let filas = document.querySelectorAll('tbody tr'); let pns = [];
+
+        filas.forEach(f => {
+            let pn = getIdentificadorFila(f);
+            if (pn && !pns.includes(pn)) pns.push(pn);
+        });
+
+        if (pns.length === 0) { rec.innerHTML = "[-] No hay PNs."; return; }
+        rec.innerHTML = "";
+        const CONCURRENCIA = 2;
+
+        for (let i = 0; i < pns.length; i += CONCURRENCIA) {
+            const lote = pns.slice(i, i + CONCURRENCIA);
+            await Promise.all(lote.map(async (pn, indiceEnLote) => {
+                let indiceGlobal = i + indiceEnLote;
+                actualizarProgreso(indiceGlobal + 1, pns.length, "Rockwell");
+
+                let itemUI = document.createElement("div");
+                itemUI.style.padding = "6px 0"; itemUI.style.borderBottom = "1px solid #eaf0f6";
+                rec.appendChild(itemUI);
+
+                if (pn.toUpperCase().startsWith("GEN-")) {
+                    itemUI.innerHTML = '<b>' + pn + ':</b> <span style="color:#7c98b6; font-style:italic;">Omitido</span>';
+                    return;
+                }
+
+                itemUI.innerHTML = '<b>' + pn + ':</b> Consultando... [...]';
+                let est = await consultarRockwellConReintento(pn);
+                let colorTextoModal = "#7c98b6"; let colorFondoFila = "";
+                
+                if (est.toLowerCase().includes("active mature")) { colorTextoModal = "#f5c26b"; colorFondoFila = COLOR_ALERTA; }
+                else if (est.toLowerCase() === "active") { colorTextoModal = "#00bda5"; colorFondoFila = COLOR_EXITO; }
+                else if (est.toLowerCase().includes("discontinued") || est.toLowerCase().includes("end of life")) { colorTextoModal = "#ff3333"; colorFondoFila = COLOR_ERROR; }
+
+                itemUI.innerHTML = '<b>' + pn + ':</b> <span style="color:' + colorTextoModal + '; font-weight:bold;">' + est + '</span>';
+
+                if (colorFondoFila !== "") {
+                    filas.forEach(f => {
+                        if (getIdentificadorFila(f) === pn) {
+                            f.style.backgroundColor = colorFondoFila;
+                            f.querySelectorAll('td').forEach(td => { td.style.backgroundColor = colorFondoFila; });
+                        }
+                    });
+                }
+            }));
+            if (i + CONCURRENCIA < pns.length) await esperarAleatorio(1200, 2500);
+        }
+        actualizarProgreso(0, 0, "");
+    };
+
+    optStock.onclick = async () => {
+        let filas = document.querySelectorAll('tbody tr');
+        let filasAProcesar = [];
+
+        for (let idx = 0; idx < filas.length; idx++) {
+            let fila = filas[idx];
+            let inputCantidad = fila.querySelector('input[data-test-id="property-input-quantity"]');
+            let inputStock = fila.querySelector('input[data-test-id="property-input-stock_pe"]');
+            let btnDesplegable = fila.querySelector('button[data-test-id="property-input-dias___semanas_entrega"]');
+            let inputTiempoEntrega = fila.querySelector('input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]');
+
+            if (!inputCantidad || !inputStock || !btnDesplegable) continue;
+
+            let cantidad = obtenerValorNumerico(inputCantidad);
+            let stock = obtenerValorNumerico(inputStock);
+            let tiempoNum = obtenerValorNumerico(inputTiempoEntrega);
+
+            if (stock <= 0 || cantidad <= 0) continue;
+
+            const margen = stock - cantidad;
+            const ratio = margen / cantidad;
+            const debeAlertar = margen < STOCK_COLCHON_ABS || ratio < STOCK_UMBRAL_PCT;
+            if (!debeAlertar) continue;
+
+            let pn = getIdentificadorFila(fila) || `Fila`;
+            let textoLeadTime = "";
+            if (stock >= cantidad) textoLeadTime = "Stock PE";
+            else {
+                let unidad = btnDesplegable.textContent.trim() || "N/A";
+                textoLeadTime = tiempoNum > 0 ? `${tiempoNum} ${unidad}` : unidad;
+            }
+
+            filasAProcesar.push({ fila, stock, cantidad, margen, pn, textoLeadTime });
+        }
+
+        if (filasAProcesar.length === 0) { flash(btnSuite); return; }
+
+        let modalStock = document.createElement('div');
+        modalStock.className = 'modal-precision';
+
+        let filasHTML = filasAProcesar.map(item => `
+            <tr style="border-bottom:1px solid #eaf0f6;">
+                <td style="padding:10px 8px; font-weight:bold; color:#33475b; font-size:13px;">${escapeHTML(item.pn)}</td>
+                <td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px;">${item.cantidad}</td>
+                <td style="padding:10px 8px; text-align:center; font-size:13px;"><span style="font-weight:bold; color:item.margen<0?'#ff3333':'#f5c26b';">${item.stock}</span></td>
+                <td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px; font-weight:bold;">${escapeHTML(item.textoLeadTime)}</td>
+            </tr>
+        `).join('');
+
+        modalStock.innerHTML = `
+            <div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 550px; padding: 15px 20px;">
+                <h3 style="margin-top:0; color:#ff7a59; margin-bottom:5px;">[!] Stock</h3>
+                <p style="font-size:13px; color:#33475b; margin-bottom:10px;">Se encontraron <b>${filasAProcesar.length} ítem(s)</b> con stock ajustado. ¿Agregar aviso?</p>
+                <div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; margin-bottom: 15px; background: #f8fafc;">
+                    <table style="width:100%; border-collapse:collapse;">
+                        <thead>
+                            <tr style="background:#eaf0f6; border-bottom:2px solid #cbd6e2;">
+                                <th style="padding:8px; text-align:left; font-size:11px; color:#516f90;">Part number</th>
+                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Cantidad</th>
+                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Stock</th>
+                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Entrega: stock Pe y/o Lead time</th>
+                            </tr>
+                        </thead>
+                        <tbody>${filasHTML}</tbody>
+                    </table>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:10px;">
+                    <button id="btnCancelarStock" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">[-] Rechazar</button>
+                    <button id="btnAceptarStock" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[OK] Aceptar e Inyectar</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modalStock);
+        document.getElementById('btnCancelarStock').onclick = () => { document.body.removeChild(modalStock); };
+
+        document.getElementById('btnAceptarStock').onclick = async () => {
+            document.body.removeChild(modalStock);
+            btnSuite.innerHTML = "[...]"; btnSuite.style.backgroundColor = "#fff9e6"; btnSuite.style.color = "#e59a10";
+            actualizarProgreso(0, filasAProcesar.length, "Alertas Stock");
+            let fallidas = [];
+
+            try {
+                for (let i = 0; i < filasAProcesar.length; i++) {
+                    actualizarProgreso(i + 1, filasAProcesar.length, "Alertas Stock");
+                    let item = filasAProcesar[i]; let pn = item.pn;
+
+                    item.fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    await esperar(300);
+
+                    let nameCell = item.fila.querySelector('[data-test-id="line-item-name-cell"]');
+                    let panelAbierto = false;
+
+                    if (nameCell) {
+                        clicMenu(nameCell.closest('button') || nameCell);
+                        for (let w = 0; w < 10; w++) {
+                            if (document.querySelector('textarea[data-test-id="line-item-name-input"]')) { panelAbierto = true; break; }
+                            await esperar(200);
+                        }
+                    }
+
+                    if (!panelAbierto) {
+                        item.fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                        await esperar(200);
+                        let btnAcciones = item.fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || item.fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+                        if (btnAcciones) {
+                            simularClic(btnAcciones);
+                            let optEditar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.edit"]', document, 2000);
+                            if (optEditar) clicMenu(optEditar.closest('button, li, a, [role="menuitem"]'));
+                        }
+                    }
+
+                    let inputNombre = await esperarElemento('textarea[data-test-id="line-item-name-input"]', document, 3000);
+                    if (!inputNombre) { fallidas.push({ pn, razon: "El panel lateral no abrió" }); document.body.click(); continue; }
+
+                    let valorActual = inputNombre.value || "";
+                    if (STOCK_REGEX_ADVERTENCIA.test(valorActual)) {
+                        let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
+                        let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
+                        if (elemCancelar) simularClic(elemCancelar);
+                        await esperar(300); continue;
+                    }
+
+                    let nuevoValor = valorActual + `\n${item.stock} UND en stock\nSujeto a variación de stock`;
+                    setReactValue(inputNombre, nuevoValor); await esperar(150); dispararEnter(inputNombre); await esperar(300);
+
+                    let elemGuardar = null;
+                    for (let attempt = 0; attempt < 10; attempt++) {
+                        let i18n = document.querySelector('i18n-string[data-key="products.edit.footer.save"]');
+                        if (i18n) elemGuardar = i18n.closest('button');
+                        if (!elemGuardar) elemGuardar = document.querySelector('button[data-selenium-test="base-dialog-confirm-btn"]');
+                        if (!elemGuardar) {
+                            let btns = Array.from(document.querySelectorAll('button'));
+                            elemGuardar = btns.find(b => b.textContent.trim() === 'Guardar');
+                        }
+                        if (elemGuardar && !elemGuardar.disabled) break;
+                        await esperar(200);
+                    }
+
+                    if (elemGuardar && !elemGuardar.disabled) {
+                        simularClic(elemGuardar);
+                        for (let w = 0; w < 30; w++) {
+                            if (!document.body.contains(elemGuardar) && !document.querySelector('textarea[data-test-id="line-item-name-input"]')) break;
+                            await esperar(150);
+                        }
+                        item.fila.style.backgroundColor = COLOR_ALERTA;
+                        item.fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ALERTA; });
+                    } else {
+                        fallidas.push({ pn, razon: "Botón Guardar no disp." });
+                        let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
+                        let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
+                        if (elemCancelar) simularClic(elemCancelar);
+                    }
+                    await esperar(200);
+                }
+            } catch (err) { fallidas.push({ pn: "GLOBAL", razon: err.message }); } 
+            finally {
+                actualizarProgreso(0, 0, "");
+                btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
+            }
+
+            if (fallidas.length > 0) mostrarToast(`[!] Stock no aplicado en:\n${fallidas.map(f => f.pn).join(', ')}`, false);
+            else flash(btnSuite);
+        };
+    };
+
+    function pedirDivisionPorPosicion(pn, tipo, filasPN, valoresIniciales, totalExacto) {
+        return new Promise((resolve) => {
+            const esPrecio = tipo === 'precio';
+            const unidad = esPrecio ? 'USD' : 'unidades';
+            const pnSeguro = escapeHTML(pn);
+
+            const filasHTML = filasPN.map((item, idx) => {
+                const info = esPrecio ? `cant: ${item.cantActual}` : `precio: $${item.precioActual}`;
+                const previo = valoresIniciales[idx] !== undefined ? valoresIniciales[idx] : '';
+                return `
+                    <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eaf0f6;">
+                        <div style="flex:1; font-size:13px; color:#33475b;"><b>${pnSeguro}</b> · pos ${idx + 1} <span style="color:#7c98b6; font-size:11px;">· actual ${info}</span></div>
+                        <input type="text" class="split-input div-pos-input" value="${escapeHTML(previo)}" placeholder="0" style="width:110px; text-align:right;">
+                        <span style="font-size:11px; color:#7c98b6; min-width:60px;">${unidad}</span>
+                    </div>`;
+            }).join('');
+
+            const modalDiv = document.createElement('div');
+            modalDiv.className = 'modal-precision';
+            modalDiv.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 600px;">' +
+                '<h3 style="margin-top:0; color:#ff7a59;">[!] PN repetido en la tabla</h3>' +
+                '<p style="font-size:13px; color:#33475b; margin-bottom:10px;"><b>' + pnSeguro + '</b> aparece <b>' + filasPN.length + ' veces</b>. Indica ' + (esPrecio ? 'el precio' : 'la cantidad') + ' de cada posición:</p>' +
+                '<div style="max-height: 300px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; background: #f8fafc;">' + filasHTML + '</div>' +
+                '<div id="divValidacionSplit" style="padding:8px 12px; border-radius:4px; font-size:12px; font-weight:bold; margin-bottom:12px;"></div>' +
+                '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+                    '<button id="btnCancelarSplit" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>' +
+                    '<button id="btnAceptarSplit" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">Aplicar</button>' +
+                '</div>' +
+            '</div>';
+            document.body.appendChild(modalDiv);
+
+            const divValidacion = modalDiv.querySelector('#divValidacionSplit');
+            const btnAceptar = modalDiv.querySelector('#btnAceptarSplit');
+            const inputs = Array.from(modalDiv.querySelectorAll('.div-pos-input'));
+
+            function validar() {
+                let ok = false, msg = '', estado = 'error';
+                if (!inputs.every(i => i.value.trim() !== '')) {
+                    msg = 'Completa todas las posiciones.';
+                } else if (totalExacto !== null && totalExacto !== undefined) {
+                    const suma = inputs.reduce((a, i) => a + parseSpanishNumber(i.value), 0);
+                    const dif = totalExacto - suma;
+                    if (Math.abs(dif) > 0.0001) {
+                        msg = dif > 0 ? `Faltan ${+dif.toFixed(2)} (total ${totalExacto})` : `Sobran ${+(-dif).toFixed(2)} (total ${totalExacto})`;
+                        estado = 'alerta';
+                    } else { msg = `Suma correcta: ${totalExacto}`; ok = true; estado = 'exito'; }
+                } else { msg = `${filasPN.length} posiciones listas.`; ok = true; estado = 'exito'; }
+
+                const paleta = { error: [COLOR_ERROR, '#ff3333'], alerta: [COLOR_ALERTA, '#e59a10'], exito: [COLOR_EXITO, '#00bda5'] }[estado];
+                divValidacion.style.background = paleta[0]; divValidacion.style.color = paleta[1]; divValidacion.textContent = msg;
+                btnAceptar.disabled = !ok; btnAceptar.style.opacity = ok ? '1' : '0.5'; btnAceptar.style.cursor = ok ? 'pointer' : 'not-allowed';
+                return ok;
+            }
+
+            const cerrar = (valor) => { modalDiv.remove(); resolve(valor); };
+            inputs.forEach(inp => inp.addEventListener('input', validar));
+            modalDiv.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') { e.stopPropagation(); cerrar(null); }
+                else if (e.key === 'Enter' && validar()) { e.preventDefault(); btnAceptar.click(); }
+            });
+            btnAceptar.onclick = () => { if (validar()) cerrar(inputs.map(i => parseSpanishNumber(i.value))); };
+            modalDiv.querySelector('#btnCancelarSplit').onclick = () => cerrar(null);
+
+            validar();
+            (inputs.find(i => i.value.trim() === '') || inputs[0]).focus();
+        });
+    }
+
+    const SEL_PRECIO = 'input[data-test-id="property-input-price"]';
+    const SEL_DESC = 'input[data-test-id="property-input-discount-percentage"]';
+    const SEL_TIEMPO = 'input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]';
+
+    function obtenerInputCampo(fila, campo) {
+        if (campo === 'cant') return getInputCantidad(fila);
+        if (campo === 'precio') return fila.querySelector(SEL_PRECIO);
+        if (campo === 'tiempo') return fila.querySelector(SEL_TIEMPO);
+        return fila.querySelector(SEL_DESC);
+    }
+
+    function reubicarFila(clave, pos) {
+        const candidatas = Array.from(document.querySelectorAll('tbody tr')).filter(f => {
+            const id = getIdentificadorFila(f);
+            return id && id.trim().toUpperCase() === clave && getInputCantidad(f) && f.querySelector(SEL_PRECIO);
+        });
+        return candidatas[pos] || null;
+    }
+
+    function pintarFila(fila, color) {
+        fila.style.backgroundColor = color;
+        fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = color; });
+    }
+
+    // ==========================================
+    // INYECCIÓN MASIVA
+    // ==========================================
+    function manejarInyeccionMasiva(tipoLogica) {
+        let titulos = {
+            'cant': { title: "Actualizar Cantidades", btn: "Agregar Cantidades", placeholder: "P/N \t 5 o P/N 5" },
+            'precio': { title: "Actualizar Precios", btn: "Agregar Precios", placeholder: "P/N \t 150.50 o P/N 150.50" },
+            'descuento': { title: "Actualizar Descuentos", btn: "Agregar Descuentos", placeholder: "P/N \t 15 o P/N 15" },
+            'tiempo': { title: "Actualizar Tiempo Entrega", btn: "Agregar Tiempos", placeholder: "P/N \t 5 o P/N 5" }
+        };
+
+        tituloModal.innerHTML = titulos[tipoLogica].title;
+        contenidoModal.innerHTML = `
+            <p style="font-size:13px; color:#516f90; margin-top:0;">Pega aquí tus datos. El script procesará P/N y el Valor.</p>
+            <textarea id="txtDatosSuite" style="width:100%; height:200px; padding:10px; border:1px solid #cbd6e2; border-radius:4px; font-size:12px; box-sizing:border-box;" placeholder="${titulos[tipoLogica].placeholder}"></textarea>
+            <div id="divBotonesMasivos" style="display:flex; justify-content:space-between; margin-top:15px; gap:10px;">
+                <button id="btnDetenerMasivo" class="hs-btn-secondary" style="width:48%; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer; display:none; color:#ff3333; border-color:#ff3333;">Detener</button>
+                <button id="btnCopiarReporteMasivo" class="hs-btn-secondary" style="width:48%; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer; display:none;">Copiar Reporte</button>
+                <button id="btnEjecutarMasivo" class="hs-btn-primary" style="width:100%; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer;">${titulos[tipoLogica].btn}</button>
+            </div>
+            <textarea id="txtReporteOculto" style="display:none;"></textarea>
+        `;
+        overlay.style.display = "flex";
+
+        let detenerEjecucion = false;
+        const btnDetener = document.getElementById("btnDetenerMasivo");
+        btnDetener.onclick = () => { detenerEjecucion = true; btnDetener.disabled = true; btnDetener.style.opacity = "0.5"; };
+
+        const btnEjecutar = document.getElementById("btnEjecutarMasivo");
+        let procesando = false;
+
+        let filasAActualizarGlobal = [];
+        let noEncontradosGlobal = [];
+        let bloqueadasGlobal = [];
+
+        btnEjecutar.onclick = async function() {
+            if (procesando) return;
+
+            // --- FASE 2: INYECCIÓN ---
+            if (btnEjecutar.innerHTML.includes("Agregar Cambios")) {
+                if (filasAActualizarGlobal.length === 0) { mostrarToast("[-] Sin datos válidos para inyectar.", false); return; }
+
+                procesando = true;
+                btnEjecutar.innerHTML = "[...] Agregando..."; btnEjecutar.disabled = true;
+                btnDetener.style.display = "block";
+
+                const noAplicados = [];
+                actualizarProgreso(0, filasAActualizarGlobal.length, "Agregando Datos");
+
+                for (let i = 0; i < filasAActualizarGlobal.length; i++) {
+                    if (detenerEjecucion) break;
+                    actualizarProgreso(i + 1, filasAActualizarGlobal.length, "Agregando Datos");
+                    const item = filasAActualizarGlobal[i];
+
+                    let fila = document.body.contains(item.fila) ? item.fila : reubicarFila(item.clave, item.pos);
+                    let input = fila ? obtenerInputCampo(fila, item.campo) : null;
+
+                    if (!input) { noAplicados.push(item.pn); continue; }
+
+                    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    await esperar(150);
+
+                    // Llama al motor garantizado (evade enmascaramientos)
+                    let esCampoSimple = (item.campo === 'cant' || item.campo === 'tiempo');
+                    await inyectarHibrido(input, item.valorFloat, esCampoSimple);
+
+                    pintarFila(fila, COLOR_EXITO);
+                }
+
+                actualizarProgreso(0, 0, "");
+                btnEjecutar.innerHTML = "Agregar Cambios"; btnEjecutar.disabled = false;
+                btnDetener.style.display = "none";
+                overlay.style.display = "none";
+                procesando = false;
+
+                const avisos = [];
+                if (noEncontradosGlobal.length) avisos.push(`No encontrados: ${noEncontradosGlobal.join(', ')}`);
+                if (bloqueadasGlobal.length) avisos.push(`Valor inválido: ${bloqueadasGlobal.map(b => b.pn).join(', ')}`);
+                if (noAplicados.length) avisos.push(`No aplicados (Fila movida/borrada): ${noAplicados.join(', ')}`);
+
+                if (avisos.length) mostrarToast("[!] " + avisos.join('\n'), false);
+                else flash(btnSuite);
+                return;
+            }
+
+            // --- FASE 1: PARSEO Y REPORTE ---
+            const { mapaMulti } = procesarTextoPegado(document.getElementById("txtDatosSuite").value);
+            const claves = Object.keys(mapaMulti);
+            if (claves.length === 0) { mostrarToast("[-] Datos no válidos.", false); return; }
+
+            procesando = true;
+            btnEjecutar.innerHTML = "[...] Procesando..."; btnEjecutar.disabled = true;
+
+            filasAActualizarGlobal = [];
+            noEncontradosGlobal = [];
+            bloqueadasGlobal = [];
+
+            const filasPorPN = {};
+            for (const fila of document.querySelectorAll('tbody tr')) {
+                const idFinal = getIdentificadorFila(fila);
+                if (!idFinal) continue;
+                const iQty = getInputCantidad(fila);
+                const iPrice = fila.querySelector(SEL_PRECIO);
+                if (!iQty || !iPrice) continue;
+                const clave = idFinal.trim().toUpperCase();
+                (filasPorPN[clave] = filasPorPN[clave] || []).push({
+                    fila, idFinal,
+                    iDiscount: fila.querySelector(SEL_DESC),
+                    iTiempo: fila.querySelector(SEL_TIEMPO),
+                    cant: obtenerValorNumerico(iQty),
+                    pOrig: obtenerValorNumerico(iPrice)
+                });
+            }
+
+            const noEncontradosIniciales = claves.filter(c => !filasPorPN[c]);
+            noEncontradosGlobal = noEncontradosIniciales;
+            const mapaFinal = {};
+            const erroresDivision = [];
+
+            for (const clave of claves) {
+                const filasPN = filasPorPN[clave];
+                if (!filasPN) continue;
+                const vals = mapaMulti[clave];
+                const N = filasPN.length, M = vals.length;
+                const pn = filasPN[0].idFinal;
+
+                if (M === N) { mapaFinal[clave] = vals.slice(); continue; }
+
+                if (tipoLogica === 'descuento' || tipoLogica === 'tiempo') {
+                    if (vals.every(v => v === vals[0])) mapaFinal[clave] = Array(N).fill(vals[0]);
+                    else erroresDivision.push({ pn, razon: `Pegaste ${M} valores distintos y hay ${N} filas.` });
+                    continue;
+                }
+
+                if (M > N) { erroresDivision.push({ pn, razon: `Pegaste ${M} valores y hay ${N} filas.` }); continue; }
+                if (tipoLogica === 'precio' && M === 1) { mapaFinal[clave] = Array(N).fill(vals[0]); continue; }
+
+                const resModal = await pedirDivisionPorPosicion(
+                    pn,
+                    tipoLogica === 'cant' ? 'cantidad' : 'precio',
+                    filasPN.map(i => ({ cantActual: i.cant, precioActual: i.pOrig })),
+                    vals,
+                    (tipoLogica === 'cant' && M === 1) ? vals[0] : null
+                );
+                if (resModal === null) { btnEjecutar.innerHTML = titulos[tipoLogica].btn; btnEjecutar.disabled = false; procesando = false; return; }
+                mapaFinal[clave] = resModal;
+            }
+
+            if (erroresDivision.length > 0) {
+                const modalErr = document.createElement('div');
+                modalErr.className = 'modal-precision';
+                const listaHTML = erroresDivision.map(e =>
+                    '<div style="padding:8px; border-bottom:1px solid #eaf0f6;"><b>' + escapeHTML(e.pn) + '</b><br><span style="color:#ff3333; font-size:12px;">' + escapeHTML(e.razon) + '</span></div>'
+                ).join('');
+                modalErr.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff3333; max-width: 500px;">' +
+                    '<h3 style="margin-top:0; color:#ff3333;">[X] Datos inconsistentes</h3>' +
+                    '<div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; padding: 8px; margin-bottom: 15px;">' + listaHTML + '</div>' +
+                    '<div style="display:flex; justify-content:flex-end;">' +
+                        '<button id="btnCerrarErrDiv" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Entendido</button>' +
+                    '</div>' +
+                '</div>';
+                document.body.appendChild(modalErr);
+                document.getElementById('btnCerrarErrDiv').onclick = () => { modalErr.remove(); btnEjecutar.innerHTML = titulos[tipoLogica].btn; btnEjecutar.disabled = false; procesando = false; };
+                return;
+            }
+
+            const res = [];
+            const campo = tipoLogica === 'descuento' ? 'desc' : tipoLogica;
+
+            if (tipoLogica === 'descuento') res.push("PN\tCant\tPrecio_Orig\t%Desc\tPrecio_Desc\tTotal\tAlerta");
+            else if (tipoLogica === 'cant') res.push("PN\tCant_Anterior\tCant_Nueva\tAlerta");
+            else if (tipoLogica === 'precio') res.push("PN\tPrecio_Anterior\tPrecio_Nuevo\tAlerta");
+            else if (tipoLogica === 'tiempo') res.push("PN\tTiempo_Anterior\tTiempo_Nuevo\tAlerta");
+
+            const formatNum = (num) => (num !== "" && num !== undefined) ? Number(num).toFixed(2).replace('.', ',') : "";
+
+            for (const clave in filasPorPN) {
+                const filasPN = filasPorPN[clave];
+                const valores = mapaFinal[clave];
+                if (valores === undefined && tipoLogica !== 'descuento' && tipoLogica !== 'tiempo') continue;
+
+                for (let idx = 0; idx < filasPN.length; idx++) {
+                    const item = filasPN[idx];
+                    const { fila, iDiscount, iTiempo, cant, pOrig, idFinal } = item;
+                    const valorMatch = valores !== undefined ? valores[idx] : undefined;
+                    const hayValor = valorMatch !== undefined;
+                    let alerta = "";
+                    let bloquear = false;
+
+                    if (hayValor) {
+                        if (tipoLogica === 'descuento') {
+                            if (valorMatch < 0) { bloquear = true; alerta += "Desc. negativo "; }
+                            if (valorMatch > 100) { bloquear = true; alerta += "Desc. > 100% "; }
+                            if (valorMatch > VAL_DESC_MAX_SOSPECHOSO && valorMatch <= 100) alerta += "Desc. inusual ";
+                        } else if (tipoLogica === 'cant') {
+                            if (valorMatch < 0) { bloquear = true; alerta += "Cant. negativa "; }
+                            if (valorMatch % 1 !== 0) alerta += "Cant. decimal ";
+                            if (valorMatch > VAL_CANT_MAX) alerta += "Cant. alta ";
+                        } else if (tipoLogica === 'precio') {
+                            if (valorMatch < 0) { bloquear = true; alerta += "Precio negativo "; }
+                            if (valorMatch > VAL_PRECIO_MAX) alerta += "Precio alto ";
+                        } else if (tipoLogica === 'tiempo') {
+                            if (valorMatch < 0) { bloquear = true; alerta += "Tiempo negativo "; }
+                        }
+                    }
+
+                    if (bloquear) {
+                        bloqueadasGlobal.push({ pn: idFinal, msg: alerta });
+                        res.push(`${idFinal}\t---\t---\t[-] ${alerta}`);
+                        pintarFila(fila, COLOR_ERROR);
+                        continue; 
+                    }
+
+                    const cambio = { clave, pos: idx, campo, fila, pn: idFinal, valorFloat: hayValor ? parseFloat(valorMatch) : null };
+
+                    if (tipoLogica === 'descuento') {
+                        let pNuevo = ""; let pTotal = cant * pOrig; let descAplicado = 0;
+                        if (hayValor) {
+                            descAplicado = Math.min(Math.max(parseFloat(valorMatch) || 0, 0), 100);
+                            pNuevo = pOrig * (1 - (descAplicado / 100)); pTotal = cant * pNuevo;
+                            cambio.valorFloat = descAplicado;
+                            if (iDiscount) filasAActualizarGlobal.push(cambio);
+                            else alerta += "Sin campo desc ";
+                        }
+                        res.push(`${idFinal}\t${cant}\t${formatNum(pOrig)}\t${descAplicado.toString().replace('.', ',')}%\t${formatNum(pNuevo)}\t${formatNum(pTotal)}\t${alerta}`);
+                    } else if (tipoLogica === 'cant') {
+                        filasAActualizarGlobal.push(cambio);
+                        res.push(`${idFinal}\t${cant}\t${valorMatch}\t${alerta}`);
+                    } else if (tipoLogica === 'precio') {
+                        filasAActualizarGlobal.push(cambio);
+                        res.push(`${idFinal}\t${formatNum(pOrig)}\t${formatNum(valorMatch)}\t${alerta}`);
+                    } else if (tipoLogica === 'tiempo') {
+                        if (iTiempo) filasAActualizarGlobal.push(cambio);
+                        else alerta += "Sin campo tiempo ";
+                        let tOrig = iTiempo ? obtenerValorNumerico(iTiempo) : 0;
+                        res.push(`${idFinal}\t${tOrig}\t${valorMatch}\t${alerta}`);
+                    }
+                } 
+            }
+
+            const encabezadoNoEnc = noEncontradosGlobal.length > 0 ? `[!] NO ENCONTRADOS: ${noEncontradosGlobal.join(', ')}\n\n` : "";
+
+            btnEjecutar.style.width = "48%";
+            btnEjecutar.innerHTML = "Agregar Cambios"; btnEjecutar.disabled = false;
+            const btnCopiar = document.getElementById("btnCopiarReporteMasivo");
+            btnCopiar.style.display = "block";
+
+            document.getElementById("txtDatosSuite").style.display = "none";
+            const txtReporte = document.getElementById("txtReporteOculto");
+            txtReporte.style.cssText = "display:block; width:100%; height:200px; padding:10px; border:1px solid " + (noEncontradosGlobal.length ? "#ff3333" : "#cbd6e2") + "; border-radius:4px; font-size:11px; box-sizing:border-box; font-family:monospace; white-space: pre; background-color:#f8fafc;";
+            txtReporte.value = encabezadoNoEnc + res.join('\n');
+
+            btnCopiar.onclick = () => {
+                txtReporte.select();
+                try { GM_setClipboard(txtReporte.value); } catch (e) {}
+                btnCopiar.innerHTML = "[OK] Copiado"; btnCopiar.style.backgroundColor = "#00bda5"; btnCopiar.style.color = "white";
+                setTimeout(() => { btnCopiar.innerHTML = "Copiar Reporte"; btnCopiar.style.backgroundColor = "#f5f8fa"; btnCopiar.style.color = "#33475b"; }, 2000);
+            };
+
+            procesando = false;
+        };
+    }
+
+    optActCant.onclick = () => manejarInyeccionMasiva('cant');
+    optActPrecio.onclick = () => manejarInyeccionMasiva('precio');
+    optAplicarDesc.onclick = () => manejarInyeccionMasiva('descuento');
+    optActTiempo.onclick = () => manejarInyeccionMasiva('tiempo');
+
+    optTiempos.onclick = async () => {
+        btnSuite.innerHTML = "[...]"; btnSuite.style.backgroundColor = "#fff9e6"; btnSuite.style.color = "#e59a10";
+        let filas = document.querySelectorAll('tbody tr'); let tareasDropdown = [];
+        actualizarProgreso(0, filas.length, "LeadTimes");
+
+        for (let i = 0; i < filas.length; i++) {
+            actualizarProgreso(i + 1, filas.length, "LeadTimes");
+            let fila = filas[i];
+            let inputCantidad = fila.querySelector('input[data-test-id="property-input-quantity"]');
+            let inputStock = fila.querySelector('input[data-test-id="property-input-stock_pe"]');
+            let inputLeadTime = fila.querySelector('input[data-test-id="property-input-leadtime"]');
+            let inputTiempoEntrega = fila.querySelector(SEL_TIEMPO);
+            let btnDesplegable = fila.querySelector('button[data-test-id="property-input-dias___semanas_entrega"]');
+
+            if (!inputCantidad || !inputTiempoEntrega || !btnDesplegable) continue;
+
+            let yaTieneTiempo = obtenerValorNumerico(inputTiempoEntrega) > 0;
+            let yaTieneDropdown = btnDesplegable.textContent.trim() !== "" && !btnDesplegable.textContent.toLowerCase().includes("seleccionar");
+            if (yaTieneTiempo && yaTieneDropdown) continue;
+
+            let cantidad = obtenerValorNumerico(inputCantidad); let stock = obtenerValorNumerico(inputStock); let leadTime = obtenerValorNumerico(inputLeadTime);
+            let stockSuficiente = (stock - cantidad);
+            let valorBuscado = "Semanas"; let numeroTiempo = 0;
+
+            if (stockSuficiente >= 0 && stock > 0) { valorBuscado = "Días"; numeroTiempo = 2; }
+            else { valorBuscado = "Semanas"; numeroTiempo = (leadTime > 0) ? (leadTime + 1) : 0; }
+
+            if (!yaTieneTiempo) setReactValue(inputTiempoEntrega, numeroTiempo);
+            if (!yaTieneDropdown) tareasDropdown.push({ boton: btnDesplegable, valor: valorBuscado });
+            if (i % 10 === 0) await esperar(10);
+        }
+
+        await esperar(200);
+        actualizarProgreso(0, tareasDropdown.length, "Menús");
+
+        for (let i = 0; i < tareasDropdown.length; i++) {
+            actualizarProgreso(i + 1, tareasDropdown.length, "Menús");
+            await seleccionarOpcionDropdownRapido(tareasDropdown[i].boton, tareasDropdown[i].valor);
+            if (i % 5 === 0 && i !== 0) await esperar(200); else await esperar(30);
+        }
+
+        actualizarProgreso(0, 0, "");
+        btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
+        flash(btnSuite);
+    };
+
+    optBorrarPorPN.onclick = async () => {
+        tituloModal.innerHTML = "[X] Borrar PN";
+        contenidoModal.innerHTML = `
+            <p style="font-size:13px; color:#516f90; margin-top:0;">Pega los P/N a eliminar.</p>
+            <textarea id="txtDatosBorrarPN" style="width:100%; height:200px; padding:10px; border:1px solid #cbd6e2; border-radius:4px; font-size:12px; box-sizing:border-box;" placeholder="PN1&#10;PN2&#10;PN3"></textarea>
+            <button id="btnEjecutarBorrarPN" class="hs-btn-primary" style="width:100%; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer; margin-top:15px; background-color:#ff3333; border-color:#ff3333;">Eliminar PNs</button>
+        `;
+        overlay.style.display = "flex";
+
+        document.getElementById("btnEjecutarBorrarPN").onclick = async () => {
+            let texto = document.getElementById("txtDatosBorrarPN").value;
+            let pnsInput = texto.split('\n').map(l => l.trim().split(/\s+/)[0]).filter(p => p !== "");
+            if (pnsInput.length === 0) { mostrarToast("[-] Sin PNs.", false); return; }
+
+            let pnsSet = new Set(pnsInput.map(p => p.toUpperCase()));
+            let pnsEncontrados = new Set();
+
+            overlay.style.display = "none";
+            btnSuite.innerHTML = "[...]"; btnSuite.style.backgroundColor = "#ffe5e5"; btnSuite.style.color = "#ff3333";
+
+            let filas = Array.from(document.querySelectorAll('tbody tr')).reverse();
+
+            for (let fila of filas) {
+                let rowPN = getIdentificadorFila(fila).toUpperCase();
+                if (pnsSet.has(rowPN)) {
+                    pnsEncontrados.add(rowPN);
+                    fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    fila.style.backgroundColor = COLOR_ERROR;
+                    fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
+                    fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    await esperar(150);
+
+                    let btnAcciones = fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+                    if (btnAcciones) {
+                        simularClic(btnAcciones);
+                        let etiquetaEliminar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.delete"]');
+                        if (etiquetaEliminar) simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
+                        await esperar(300);
+                    }
+                }
+            }
+
+            let noEncontrados = [...pnsSet].filter(pn => !pnsEncontrados.has(pn));
+            btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
+
+            if (noEncontrados.length > 0) mostrarToast(`[!] No encontrados:\n${noEncontrados.join(', ')}`, false);
+            else flash(btnSuite);
+        };
+    };
+
+    optBorrar.onclick = async () => {
+        if (!confirm("¿Eliminar TODOS los ítems de la cotización?\n\nEsta acción no se puede deshacer.")) return;
+
+        btnSuite.innerHTML = "[...]"; btnSuite.style.backgroundColor = "#ffe5e5"; btnSuite.style.color = "#ff3333";
+        let filas = document.querySelectorAll('tbody tr');
+        actualizarProgreso(0, filas.length, "Eliminando");
+
+        for (let i = filas.length - 1; i >= 0; i--) {
+            actualizarProgreso(filas.length - i, filas.length, "Eliminando");
+            let fila = filas[i];
+            fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            await esperar(150);
+
+            let btnAcciones = fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+            if (btnAcciones) {
+                simularClic(btnAcciones);
+                let etiquetaEliminar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.delete"]');
+                if (etiquetaEliminar) simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
+                await esperar(200);
+            }
+        }
+
+        actualizarProgreso(0, 0, "");
+        btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
+        flash(btnSuite);
+    };
+
+    optExtraer.onclick = () => { copiadoRapidoPNs(); };
+
+    optCutSheetColab.onclick = () => {
+        let pnsUnicos = [];
+        document.querySelectorAll('tbody tr').forEach(f => {
+            let finalPn = getIdentificadorFila(f);
+            if (finalPn) {
+                finalPn = finalPn.replace(/[\/\\?%*:|"<>]/g, '-');
+                if (!pnsUnicos.includes(finalPn)) pnsUnicos.push(finalPn);
+            }
+        });
+        if (pnsUnicos.length === 0) { mostrarToast("[-] Sin PNs.", false); return; }
+        try { GM_setClipboard(pnsUnicos.join('\n')); }
+        catch (e) { mostrarToast("[-] No se pudo copiar.", false); return; }
+        setTimeout(() => { window.open('https://colab.research.google.com/drive/1sNzOz3SvY06wKBRuhMVdDeLMXK2Q_p2L', '_blank'); }, 800);
+    };
+
+    cargarBaseDatosMult();
+
+})();
