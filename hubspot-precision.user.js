@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.01
+// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.07
 // @namespace    http://tampermonkey.net/
-// @version      9.01
-// @description  Script Definitivo. Fix UI menus (concatenacion tradicional), Fix ESLint, Fix Rockwell Scraping.
+// @version      9.07
+// @description  Script Definitivo. Corrección validación Add Comment (anti-duplicados) e inyección con salto de línea inicial (<br>).
 // @match        https://app.hubspot.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
@@ -115,7 +115,7 @@
     }
 
     // ==========================================
-    // 🚀 MOTORES DE INYECCIÓN V9.01 (Sin ESLint errors y con Fallback de coma)
+    // 🚀 MOTORES DE INYECCIÓN
     // ==========================================
     function setReactValue(element, value) {
         if (!element) return;
@@ -124,7 +124,7 @@
 
         const descElement = Object.getOwnPropertyDescriptor(element, 'value');
         const valueSetter = descElement ? descElement.set : undefined;
-        
+
         const prototype = Object.getPrototypeOf(element);
         const descPrototype = Object.getOwnPropertyDescriptor(prototype, 'value');
         const prototypeValueSetter = descPrototype ? descPrototype.set : undefined;
@@ -151,7 +151,7 @@
         input.select();
         setReactValue(input, strDot);
         await esperar(80);
-        
+
         if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
             dispararEnter(input); input.blur(); return;
         }
@@ -164,19 +164,19 @@
         input.select();
         setReactValue(input, strComma);
         await esperar(80);
-        
+
         if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
             dispararEnter(input); input.blur(); return;
         }
 
         input.focus();
         input.select();
-        
+
         document.execCommand('delete', false, null);
         await esperar(50);
 
         document.execCommand('insertText', false, strComma);
-        
+
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
         await esperar(100);
@@ -309,7 +309,8 @@
         toast.style.position = "fixed"; toast.style.bottom = "30px"; toast.style.right = "30px";
         toast.style.backgroundColor = esExito ? "#00bda5" : "#ff3333"; toast.style.color = "white";
         toast.style.padding = "15px 20px"; toast.style.borderRadius = "5px"; toast.style.boxShadow = "0 5px 15px rgba(0,0,0,0.2)";
-        toast.style.zIndex = "10000"; toast.style.fontFamily = "sans-serif"; toast.style.fontSize = "13px"; toast.style.whiteSpace = "pre-line";
+        toast.style.zIndex = "10000"; toast.style.fontFamily = "sans-serif"; toast.style.fontSize = "13px";
+        toast.style.whiteSpace = "pre-line";
         toast.style.opacity = "0"; toast.style.transition = "opacity 0.4s";
         document.body.appendChild(toast);
         setTimeout(() => { toast.style.opacity = "1"; }, 10);
@@ -322,10 +323,16 @@
             l = l.trim(); if (!l) return "";
             l = l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             if (/^[\-\*•]\s+/.test(l)) l = l.replace(/^[\-\*•]\s+/, '&bull; ');
-            // Uso estandar sin $ por si se pierden en el copiado
             l = l.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/_(.*?)_/g, '<em>$1</em>').replace(/\*(.*?)\*/g, '<em>$1</em>');
             return l;
-        }).filter(l => l.length > 0).join(' <br> ');
+        }).filter(l => l.length > 0).join('<br>');
+    }
+
+    // NUEVA FUNCIÓN: Retorna el texto como formato plano (sin HTML) para limpieza y validaciones
+    function stripHTML(html) {
+       let tmp = document.createElement("DIV");
+       tmp.innerHTML = html;
+       return tmp.textContent || tmp.innerText || "";
     }
 
     function parseMultipleGenerics(text) {
@@ -343,15 +350,43 @@
         if (currentItem) items.push(currentItem);
         return items;
     }
+    
+    // Función específica para parsear comentarios (PN en primera línea, comentarios en las siguientes)
+    function parseComentariosSimples(text) {
+        let lines = text.split('\n');
+        let items = [];
+        let currentItem = null;
+        
+        for (let line of lines) {
+            let trimmed = line.trim();
+            if (trimmed === "") continue; // Saltar líneas vacías
+            
+            // Si la línea NO empieza con un carácter especial de lista (-, *, •) 
+            // y no tiene pinta de comentario largo, asumimos que es un PN
+            if (!/^[\-\*•]/.test(trimmed) && trimmed.length < 30 && !trimmed.includes(' ')) {
+                if (currentItem) items.push(currentItem); // Guardamos el anterior
+                currentItem = { pn: trimmed, descLines: [] };
+            } else if (currentItem) {
+                // Si ya tenemos un PN, esto es un comentario
+                currentItem.descLines.push(trimmed);
+            }
+        }
+        if (currentItem) items.push(currentItem);
+        return items;
+    }
 
-    function solicitarTextoMultilinea(tituloModalPersonalizado) {
+    function solicitarTextoMultilinea(tituloModalPersonalizado, esParaComentarios = false) {
         return new Promise((resolve) => {
+            let placeholderText = esParaComentarios 
+                ? "PN1\\n- Comentario 1\\n- Comentario 2\\nPN2\\n- Comentario 3" 
+                : "PN1@@Especificaciones\\ncomentario 1\\nPN2@@Otra info...";
+                
             let modalGen = document.createElement('div');
             modalGen.className = 'modal-precision';
             modalGen.innerHTML = '<div class="modal-content-precision">' +
                 '<h4 style="margin-top:0; color:#33475b;"><span class="icon-sobrio">[*]</span> Formateador (' + tituloModalPersonalizado + ')</h4>' +
-                '<p style="font-size:11px; color:#516f90; margin-bottom:8px;">• Negrita: <b>**texto**</b> | • Cursiva: <i>*texto*</i> | • Viñeta: <b>- ítem</b></p>' +
-                '<textarea id="txtEntradaPrecision" rows="8" style="width:100%; border:1px solid #cbd6e2; border-radius:4px; padding:8px; font-size:12px; box-sizing:border-box;" placeholder="PN1@@Especificaciones\ncomentario 1\nPN2@@Otra info..."></textarea>' +
+                '<p style="font-size:11px; color:#516f90; margin-bottom:8px;">• Negrita: <b>**texto**</b> | • Cursiva: <i>_texto_</i> | • Viñeta: <b>- ítem</b></p>' +
+                '<textarea id="txtEntradaPrecision" rows="8" style="width:100%; border:1px solid #cbd6e2; border-radius:4px; padding:8px; font-size:12px; box-sizing:border-box;" placeholder="'+ placeholderText +'"></textarea>' +
                 '<div style="margin-top:8px;"><span style="font-size:10px; font-weight:bold; color:#516f90;">VISTA PREVIA:</span><div id="previewPrecision" class="preview-box"><i>Aparecerá aquí...</i></div></div>' +
                 '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">' +
                     '<span style="font-size:10px; color:#7c98b6;">Presiona <b>Ctrl + Enter</b> para enviar</span>' +
@@ -368,12 +403,18 @@
             txtArea.oninput = () => {
                 let val = txtArea.value.trim();
                 if (!val) { preview.innerHTML = '<i>Aparecerá aquí...</i>'; return; }
-                let items = parseMultipleGenerics(val);
-                if (items.length === 0) { preview.innerHTML = '<i>Formato inválido. Usa P/N@@Descripción</i>'; return; }
+                
+                let items = esParaComentarios ? parseComentariosSimples(val) : parseMultipleGenerics(val);
+                
+                if (items.length === 0) { 
+                    preview.innerHTML = esParaComentarios ? '<i>Formato inválido. Usa P/N en una línea y los comentarios abajo.</i>' : '<i>Formato inválido. Usa P/N@@Descripción</i>'; 
+                    return; 
+                }
+                
                 let html = "<b>[i] " + items.length + " Elemento(s) detectado(s):</b><br><br>";
                 items.forEach((item, idx) => {
-                    let descHTML = convertirAHTML(item.descLines.join('\n'));
-                    html += '<b style="color:#00a4bd;">' + (idx + 1) + '. [' + item.pn + ']</b><br><div style="padding-left:10px; border-left:2px solid #cbd6e2; margin-top:4px; font-size:11px;">' + descHTML + '</div><br>';
+                    let descFormat = convertirAHTML(item.descLines.join('\n'));
+                    html += '<b style="color:#00a4bd;">' + (idx + 1) + '. [' + item.pn + ']</b><br><div style="padding-left:10px; border-left:2px solid #cbd6e2; margin-top:4px; font-size:11px;">' + descFormat + '</div><br>';
                 });
                 preview.innerHTML = html;
             };
@@ -467,7 +508,6 @@
     LISTA_GEN.forEach(item => {
         let btnItem = document.createElement("button"); btnItem.className = "btn-generico";
         let nombreCorto = item.desc.replace("GEN-ELECTRICA-", "").trim();
-        // CONCATENACIÓN TRADICIONAL
         btnItem.innerHTML = '<b style="color:#33475b; font-size:11px;">' + nombreCorto + '</b><br><span style="color:#7c98b6; font-size:10px;">' + item.code + '</span>';
         btnItem.dataset.codigo = item.code; fragmento.appendChild(btnItem);
     });
@@ -481,7 +521,6 @@
 
     function crearOptionBtn(texto, icono) {
         let b = document.createElement("button"); b.className = "hs-menu-item";
-        // CONCATENACIÓN TRADICIONAL
         b.innerHTML = '<span class="icon-sobrio">' + icono + '</span> <span style="margin-left:8px;">' + texto + '</span>';
         b.style.cssText = "padding:8px 16px; background-color:transparent; color:#33475b; border:none; cursor:pointer; font-weight:500; text-align:left; font-size:13px; width:100%; display:flex; align-items:center;";
         return b;
@@ -495,10 +534,14 @@
     let optRockwell = crearOptionBtn("Ciclo Rockwell", "[R]");
     let optExtraer = crearOptionBtn("Copiar PNs (Alt+C)", "[C]");
     let optAuditoria = crearOptionBtn("Auditar Cotización", "[A]");
+
+    // NUEVO BOTÓN: Add Comment
+    let optAddComment = crearOptionBtn("Add Comment", "[+]");
+
     let optBorrarPorPN = crearOptionBtn("Borrar por PN", "[X]"); optBorrarPorPN.style.color = "#ff3333";
     let optValMult = crearOptionBtn("Val. Mult.", "[M]");
 
-    menuExtras.append(crearTituloMenu("Consultas"), optCutSheetColab, optRockwell, optExtraer, optAuditoria, crearTituloMenu("Acciones"), optBorrarPorPN, optValMult);
+    menuExtras.append(crearTituloMenu("Consultas"), optCutSheetColab, optRockwell, optExtraer, optAuditoria, crearTituloMenu("Acciones"), optAddComment, optBorrarPorPN, optValMult);
 
     let optActCant = crearOptionBtn("Act. Cantidades", "[C]");
     let optActPrecio = crearOptionBtn("Act. Precios", "[P]");
@@ -1008,38 +1051,36 @@
         let modalStock = document.createElement('div');
         modalStock.className = 'modal-precision';
 
-        let filasHTML = filasAProcesar.map(item => `
-            <tr style="border-bottom:1px solid #eaf0f6;">
-                <td style="padding:10px 8px; font-weight:bold; color:#33475b; font-size:13px;">${escapeHTML(item.pn)}</td>
-                <td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px;">${item.cantidad}</td>
-                <td style="padding:10px 8px; text-align:center; font-size:13px;"><span style="font-weight:bold; color:item.margen<0?'#ff3333':'#f5c26b';">${item.stock}</span></td>
-                <td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px; font-weight:bold;">${escapeHTML(item.textoLeadTime)}</td>
-            </tr>
-        `).join('');
+        let filasHTML = filasAProcesar.map(item => {
+            return '<tr style="border-bottom:1px solid #eaf0f6;">' +
+                   '<td style="padding:10px 8px; font-weight:bold; color:#33475b; font-size:13px;">' + escapeHTML(item.pn) + '</td>' +
+                   '<td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px;">' + item.cantidad + '</td>' +
+                   '<td style="padding:10px 8px; text-align:center; font-size:13px;"><span style="font-weight:bold; color:' + (item.margen < 0 ? '#ff3333' : '#f5c26b') + ';">' + item.stock + '</span></td>' +
+                   '<td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px; font-weight:bold;">' + escapeHTML(item.textoLeadTime) + '</td>' +
+                   '</tr>';
+        }).join('');
 
-        modalStock.innerHTML = `
-            <div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 550px; padding: 15px 20px;">
-                <h3 style="margin-top:0; color:#ff7a59; margin-bottom:5px;">[!] Stock</h3>
-                <p style="font-size:13px; color:#33475b; margin-bottom:10px;">Se encontraron <b>${filasAProcesar.length} ítem(s)</b> con stock ajustado. ¿Agregar aviso?</p>
-                <div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; margin-bottom: 15px; background: #f8fafc;">
-                    <table style="width:100%; border-collapse:collapse;">
-                        <thead>
-                            <tr style="background:#eaf0f6; border-bottom:2px solid #cbd6e2;">
-                                <th style="padding:8px; text-align:left; font-size:11px; color:#516f90;">Part number</th>
-                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Cantidad</th>
-                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Stock</th>
-                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Entrega: stock Pe y/o Lead time</th>
-                            </tr>
-                        </thead>
-                        <tbody>${filasHTML}</tbody>
-                    </table>
-                </div>
-                <div style="display:flex; justify-content:flex-end; gap:10px;">
-                    <button id="btnCancelarStock" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">[-] Rechazar</button>
-                    <button id="btnAceptarStock" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[OK] Aceptar e Inyectar</button>
-                </div>
-            </div>
-        `;
+        modalStock.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 550px; padding: 15px 20px;">' +
+            '<h3 style="margin-top:0; color:#ff7a59; margin-bottom:5px;">[!] Stock</h3>' +
+            '<p style="font-size:13px; color:#33475b; margin-bottom:10px;">Se encontraron <b>' + filasAProcesar.length + ' ítem(s)</b> con stock ajustado. ¿Agregar aviso?</p>' +
+            '<div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; margin-bottom: 15px; background: #f8fafc;">' +
+                '<table style="width:100%; border-collapse:collapse;">' +
+                    '<thead>' +
+                        '<tr style="background:#eaf0f6; border-bottom:2px solid #cbd6e2;">' +
+                            '<th style="padding:8px; text-align:left; font-size:11px; color:#516f90;">Part number</th>' +
+                            '<th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Cantidad</th>' +
+                            '<th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Stock</th>' +
+                            '<th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Entrega: stock Pe y/o Lead time</th>' +
+                        '</tr>' +
+                    '</thead>' +
+                    '<tbody>' + filasHTML + '</tbody>' +
+                '</table>' +
+            '</div>' +
+            '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+                '<button id="btnCancelarStock" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">[-] Rechazar</button>' +
+                '<button id="btnAceptarStock" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[OK] Aceptar e Inyectar</button>' +
+            '</div>' +
+        '</div>';
         document.body.appendChild(modalStock);
         document.getElementById('btnCancelarStock').onclick = () => { document.body.removeChild(modalStock); };
 
@@ -1080,7 +1121,7 @@
                     }
 
                     let inputNombre = await esperarElemento('textarea[data-test-id="line-item-name-input"]', document, 3000);
-                    if (!inputNombre) { fallidas.push({ pn, razon: "El panel lateral no abrió" }); document.body.click(); continue; }
+                    if (!inputNombre) { fallidas.push({ pn: pn, razon: "El panel lateral no abrió" }); document.body.click(); continue; }
 
                     let valorActual = inputNombre.value || "";
                     if (STOCK_REGEX_ADVERTENCIA.test(valorActual)) {
@@ -1090,7 +1131,8 @@
                         await esperar(300); continue;
                     }
 
-                    let nuevoValor = valorActual + `\n${item.stock} UND en stock\nSujeto a variación de stock`;
+                    // RESTAURADO EL FORMATO HTML PARA EL STOCK
+                    let nuevoValor = valorActual.trim() + '<br> <strong>' + item.stock + ' UND en stock</strong> <br> <em>Sujeto a variación de stock</em>';
                     setReactValue(inputNombre, nuevoValor); await esperar(150); dispararEnter(inputNombre); await esperar(300);
 
                     let elemGuardar = null;
@@ -1115,7 +1157,7 @@
                         item.fila.style.backgroundColor = COLOR_ALERTA;
                         item.fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ALERTA; });
                     } else {
-                        fallidas.push({ pn, razon: "Botón Guardar no disp." });
+                        fallidas.push({ pn: pn, razon: "Botón Guardar no disp." });
                         let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
                         let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
                         if (elemCancelar) simularClic(elemCancelar);
@@ -1128,8 +1170,10 @@
                 btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
             }
 
-            if (fallidas.length > 0) mostrarToast(`[!] Stock no aplicado en:\n${fallidas.map(f => f.pn).join(', ')}`, false);
-            else flash(btnSuite);
+            if (fallidas.length > 0) {
+                let fallosFormateados = fallidas.map(f => f.pn).join(', ');
+                mostrarToast("[!] Stock no aplicado en:\n" + fallosFormateados, false);
+            } else flash(btnSuite);
         };
     };
 
@@ -1179,7 +1223,7 @@
                         msg = dif > 0 ? `Faltan ${+dif.toFixed(2)} (total ${totalExacto})` : `Sobran ${+(-dif).toFixed(2)} (total ${totalExacto})`;
                         estado = 'alerta';
                     } else { msg = `Suma correcta: ${totalExacto}`; ok = true; estado = 'exito'; }
-                } else { msg = `${filasPN.length} posiciones listas.`; ok = true; estado = 'exito'; }
+                } else { msg = `${filasPN.length} positions ready.`; ok = true; estado = 'exito'; }
 
                 const paleta = { error: [COLOR_ERROR, '#ff3333'], alerta: [COLOR_ALERTA, '#e59a10'], exito: [COLOR_EXITO, '#00bda5'] }[estado];
                 divValidacion.style.background = paleta[0]; divValidacion.style.color = paleta[1]; divValidacion.textContent = msg;
@@ -1539,101 +1583,167 @@
         flash(btnSuite);
     };
 
-    optBorrarPorPN.onclick = async () => {
-        tituloModal.innerHTML = "[X] Borrar PN";
-        contenidoModal.innerHTML = `
-            <p style="font-size:13px; color:#516f90; margin-top:0;">Pega los P/N a eliminar.</p>
-            <textarea id="txtDatosBorrarPN" style="width:100%; height:200px; padding:10px; border:1px solid #cbd6e2; border-radius:4px; font-size:12px; box-sizing:border-box;" placeholder="PN1&#10;PN2&#10;PN3"></textarea>
-            <button id="btnEjecutarBorrarPN" class="hs-btn-primary" style="width:100%; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer; margin-top:15px; background-color:#ff3333; border-color:#ff3333;">Eliminar PNs</button>
-        `;
-        overlay.style.display = "flex";
+    // 🌟 INYECCIÓN DE COMENTARIOS MASIVOS (FIXED) 🌟
+    optAddComment.onclick = async () => {
+        let datosUsuario = await solicitarTextoMultilinea("Add Comment", true); // True para modo simple sin @@
+        if (!datosUsuario) return;
 
-        document.getElementById("btnEjecutarBorrarPN").onclick = async () => {
-            let texto = document.getElementById("txtDatosBorrarPN").value;
-            let pnsInput = texto.split('\n').map(l => l.trim().split(/\s+/)[0]).filter(p => p !== "");
-            if (pnsInput.length === 0) { mostrarToast("[-] Sin PNs.", false); return; }
+        let itemsComentarios = parseComentariosSimples(datosUsuario);
+        if (itemsComentarios.length === 0) return;
 
-            let pnsSet = new Set(pnsInput.map(p => p.toUpperCase()));
-            let pnsEncontrados = new Set();
+        btnExtras.innerHTML = "[...]"; btnExtras.style.backgroundColor = "#e59a10";
+        let filas = Array.from(document.querySelectorAll('tbody tr'));
+        let fallosCriticos = []; 
+        let omitidos = 0; 
+        let procesados = 0; 
+        let noEncontrados = [];
 
-            overlay.style.display = "none";
-            btnSuite.innerHTML = "[...]"; btnSuite.style.backgroundColor = "#ffe5e5"; btnSuite.style.color = "#ff3333";
+        actualizarProgreso(0, itemsComentarios.length, "Añadiendo Comentarios");
 
-            let filas = Array.from(document.querySelectorAll('tbody tr')).reverse();
+        for (let i = 0; i < itemsComentarios.length; i++) {
+            actualizarProgreso(i + 1, itemsComentarios.length, "Añadiendo Comentarios");
+            let itemData = itemsComentarios[i];
+            let pnObjetivo = itemData.pn.toUpperCase();
+            
+            // [FIX]: Forzamos que CADA LÍNEA procesada tenga un <br> al inicio. 
+            // Así garantizamos el salto de línea en HubSpot
+            let textoHTML = itemData.descLines.map(l => {
+                let lineaMapeada = l.trim();
+                if (/^[\-\*•]\s+/.test(lineaMapeada)) lineaMapeada = lineaMapeada.replace(/^[\-\*•]\s+/, '&bull; ');
+                lineaMapeada = lineaMapeada.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                           .replace(/_(.*?)_/g, '<em>$1</em>')
+                                           .replace(/\*(.*?)\*/g, '<em>$1</em>');
+                return '<br> ' + lineaMapeada; // ← Agregamos <br> explícito a cada línea
+            }).join('');
+            
+            let textoAValidar = itemData.descLines[0].trim(); 
 
-            for (let fila of filas) {
-                let rowPN = getIdentificadorFila(fila).toUpperCase();
-                if (pnsSet.has(rowPN)) {
-                    pnsEncontrados.add(rowPN);
-                    fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    fila.style.backgroundColor = COLOR_ERROR;
-                    fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
-                    fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-                    await esperar(150);
+            let filasDestino = filas.filter(f => {
+                let id = getIdentificadorFila(f);
+                return id ? id.trim().toUpperCase() === pnObjetivo : false;
+            });
 
-                    let btnAcciones = fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
-                    if (btnAcciones) {
-                        simularClic(btnAcciones);
-                        let etiquetaEliminar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.delete"]');
-                        if (etiquetaEliminar) simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
-                        await esperar(300);
-                    }
-                }
+            if (filasDestino.length === 0) {
+                noEncontrados.push(pnObjetivo);
+                continue;
             }
 
-            let noEncontrados = [...pnsSet].filter(pn => !pnsEncontrados.has(pn));
-            btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
+            for (let filaTarget of filasDestino) {
+                filaTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                await esperar(300);
 
-            if (noEncontrados.length > 0) mostrarToast(`[!] No encontrados:\n${noEncontrados.join(', ')}`, false);
-            else flash(btnSuite);
-        };
-    };
+                let nameCell = filaTarget.querySelector('[data-test-id="line-item-name-cell"]');
+                let panelAbierto = false;
 
-    optBorrar.onclick = async () => {
-        if (!confirm("¿Eliminar TODOS los ítems de la cotización?\n\nEsta acción no se puede deshacer.")) return;
+                if (nameCell) {
+                    clicMenu(nameCell.closest('button') || nameCell);
+                    for (let w = 0; w < 10; w++) {
+                        if (document.querySelector('textarea[data-test-id="line-item-name-input"]')) {
+                            panelAbierto = true; break;
+                        }
+                        await esperar(200);
+                    }
+                }
 
-        btnSuite.innerHTML = "[...]"; btnSuite.style.backgroundColor = "#ffe5e5"; btnSuite.style.color = "#ff3333";
-        let filas = document.querySelectorAll('tbody tr');
-        actualizarProgreso(0, filas.length, "Eliminando");
+                if (!panelAbierto) {
+                    filaTarget.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    await esperar(200);
+                    let btnAcciones = filaTarget.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || filaTarget.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+                    if (btnAcciones) {
+                        simularClic(btnAcciones);
+                        let optEditar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.edit"]', document, 2000);
+                        if (optEditar) clicMenu(optEditar.closest('button, li, a, [role="menuitem"]'));
+                    }
+                }
 
-        for (let i = filas.length - 1; i >= 0; i--) {
-            actualizarProgreso(filas.length - i, filas.length, "Eliminando");
-            let fila = filas[i];
-            fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-            await esperar(150);
+                let inputNombre = await esperarElemento('textarea[data-test-id="line-item-name-input"]', document, 3000);
+                
+                // [NUEVO REQUERIMIENTO]: SOLO inyectar en el campo Nombre. Ignoramos code_desc_gen.
+                if (!inputNombre) {
+                    fallosCriticos.push(pnObjetivo + ": Panel no abrió");
+                    document.body.click();
+                    continue;
+                }
 
-            let btnAcciones = fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
-            if (btnAcciones) {
-                simularClic(btnAcciones);
-                let etiquetaEliminar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.delete"]');
-                if (etiquetaEliminar) simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
+                let valorActualNombre = inputNombre.value || "";
+
+                // Validación de HTML en bruto (Limpiamos los * y _ de tu input original para buscar la frase pura)
+                let textPlanoValidar = textoAValidar.replace(/\*\*(.*?)\*\*/g, '$1').replace(/_(.*?)_/g, '$1').replace(/\*(.*?)\*/g, '$1');
+                
+                // ¿El texto ya está en el nombre actual?
+                if (valorActualNombre.includes(textPlanoValidar)) {
+                    let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
+                    let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
+                    if (elemCancelar) simularClic(elemCancelar);
+                    
+                    await esperar(200);
+                    document.body.click(); 
+                    await esperar(200);
+                    
+                    filaTarget.style.backgroundColor = COLOR_ERROR; // Rojo leve (Menos es Más)
+                    filaTarget.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
+                    omitidos++;
+                    continue;
+                }
+
+                // INYECCIÓN HTML SÓLO EN NOMBRE
+                // [FIX]: No ponemos <br> extra aquí porque textoHTML ya lo trae en su primera línea.
+                let nuevoValorNombre = valorActualNombre.trim() + textoHTML;
+                setReactValue(inputNombre, nuevoValorNombre);
+                await esperar(150);
+                dispararEnter(inputNombre);
+
+                await esperar(300);
+
+                let elemGuardar = null;
+                for (let attempt = 0; attempt < 10; attempt++) {
+                    let i18n = document.querySelector('i18n-string[data-key="products.edit.footer.save"]');
+                    if (i18n) elemGuardar = i18n.closest('button');
+                    if (!elemGuardar) elemGuardar = document.querySelector('button[data-selenium-test="base-dialog-confirm-btn"]');
+                    if (!elemGuardar) {
+                        let btns = Array.from(document.querySelectorAll('button'));
+                        elemGuardar = btns.find(b => b.textContent.trim() === 'Guardar');
+                    }
+                    if (elemGuardar && !elemGuardar.disabled) break;
+                    await esperar(200);
+                }
+
+                if (elemGuardar && !elemGuardar.disabled) {
+                    simularClic(elemGuardar);
+                    for (let w = 0; w < 30; w++) {
+                        if (!document.body.contains(elemGuardar) && !document.querySelector('textarea[data-test-id="line-item-name-input"]')) break;
+                        await esperar(150);
+                    }
+                    filaTarget.style.backgroundColor = COLOR_EXITO;
+                    filaTarget.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_EXITO; });
+                    procesados++;
+                } else {
+                    fallosCriticos.push(pnObjetivo + ": Botón Guardar inactivo");
+                    let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
+                    let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
+                    if (elemCancelar) simularClic(elemCancelar);
+                }
                 await esperar(200);
             }
         }
 
         actualizarProgreso(0, 0, "");
-        btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
-        flash(btnSuite);
+        btnExtras.innerHTML = "Extras ▾"; btnExtras.style.backgroundColor = "transparent";
+
+        let avisoFinal = "";
+        if (noEncontrados.length > 0) {
+            avisoFinal += "[!] No encontrados:\n" + noEncontrados.join('\n') + "\n\n";
+        }
+        if (fallosCriticos.length > 0) {
+            avisoFinal += "Errores Críticos:\n" + fallosCriticos.join('\n') + "\n\n";
+        }
+        if (omitidos > 0) {
+            avisoFinal += `👍 ${omitidos} comentarios omitidos (ya existían).\n`;
+        }
+        avisoFinal += `✅ ${procesados} inyectados.`;
+
+        mostrarToast(avisoFinal, procesados > 0);
+        if (procesados > 0) flash(btnExtras);
     };
-
-    optExtraer.onclick = () => { copiadoRapidoPNs(); };
-
-    optCutSheetColab.onclick = () => {
-        let pnsUnicos = [];
-        document.querySelectorAll('tbody tr').forEach(f => {
-            let finalPn = getIdentificadorFila(f);
-            if (finalPn) {
-                finalPn = finalPn.replace(/[\/\\?%*:|"<>]/g, '-');
-                if (!pnsUnicos.includes(finalPn)) pnsUnicos.push(finalPn);
-            }
-        });
-        if (pnsUnicos.length === 0) { mostrarToast("[-] Sin PNs.", false); return; }
-        try { GM_setClipboard(pnsUnicos.join('\n')); }
-        catch (e) { mostrarToast("[-] No se pudo copiar.", false); return; }
-        setTimeout(() => { window.open('https://colab.research.google.com/drive/1sNzOz3SvY06wKBRuhMVdDeLMXK2Q_p2L', '_blank'); }, 800);
-    };
-
-    cargarBaseDatosMult();
 
 })();
