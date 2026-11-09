@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.08
+// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.11
 // @namespace    http://tampermonkey.net/
-// @version      9.08
-// @description  Script Definitivo. Inyección de comentarios planos en Nombre y Restauración de función "Borrar Todo".
+// @version      9.11
+// @description  Script Definitivo. Omni-Inyector de precios garantizado, Borrar Todo y Comentarios en Nombre.
 // @match        https://app.hubspot.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
@@ -24,7 +24,7 @@
 
     // ⚙️ CONFIGURACIÓN VALIDADOR DE DATOS MASIVOS
     const VAL_CANT_MAX = 10000;
-    const VAL_PRECIO_MAX = 100000;
+    const VAL_PRECIO_MAX = 1000000; // Ampliado por precaución
     const VAL_DESC_MAX_SOSPECHOSO = 50;
 
     // ⚙️ CONFIGURACIÓN VALIDADOR DE MÚLTIPLOS
@@ -95,7 +95,7 @@
         }
         let porcentaje = Math.round((actual / total) * 100);
         progressBar.style.display = 'block'; progressBar.style.width = porcentaje + '%';
-        progressText.style.display = 'block'; progressText.innerHTML = "[~] " + mensaje + ": " + actual + " / " + total + " (" + porcentaje + "%)";
+        progressText.style.display = 'block'; progressText.innerHTML = `[~] ${mensaje}: ${actual} / ${total} (${porcentaje}%)`;
     }
 
     const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -115,7 +115,7 @@
     }
 
     // ==========================================
-    // 🚀 MOTORES DE INYECCIÓN
+    // 🚀 MOTORES DE INYECCIÓN (OMNI-INYECTOR FIJO)
     // ==========================================
     function setReactValue(element, value) {
         if (!element) return;
@@ -140,6 +140,7 @@
         element.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
+    // 🔥 OMNI-INYECTOR: Prueba todos los métodos hasta que HubSpot acepte el número real
     async function inyectarHibrido(input, valorFloat, esCampoSimple = false) {
         simularClic(input);
         await esperar(100);
@@ -147,39 +148,44 @@
         let strDot = valorFloat.toString();
         let strComma = strDot.replace('.', ',');
 
-        input.focus();
-        input.select();
+        // INTENTO 1: Número Crudo directo (Bypassa máscaras que exigen tipado estricto)
+        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
+        setReactValue(input, valorFloat);
+        await esperar(80);
+        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
+            dispararEnter(input); input.blur(); return;
+        }
+
+        // INTENTO 2: String con Punto
+        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
         setReactValue(input, strDot);
         await esperar(80);
-
         if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
             dispararEnter(input); input.blur(); return;
         }
 
-        if (esCampoSimple) {
-             dispararEnter(input); input.blur(); return;
-        }
-
-        input.focus();
-        input.select();
+        // INTENTO 3: String con Coma
+        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
         setReactValue(input, strComma);
         await esperar(80);
-
         if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
             dispararEnter(input); input.blur(); return;
         }
 
-        input.focus();
-        input.select();
-
-        document.execCommand('delete', false, null);
-        await esperar(50);
-
+        // INTENTO 4: Simulación de tipeo / Portapapeles (Coma)
+        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
         document.execCommand('insertText', false, strComma);
-
         input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        await esperar(100);
+        await esperar(80);
+        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
+            dispararEnter(input); input.blur(); return;
+        }
+
+        // INTENTO 5: Simulación de tipeo / Portapapeles (Punto)
+        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
+        document.execCommand('insertText', false, strDot);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await esperar(80);
 
         dispararEnter(input);
         input.blur();
@@ -328,7 +334,6 @@
         }).filter(l => l.length > 0).join('<br>');
     }
 
-    // NUEVA FUNCIÓN: Retorna el texto como formato plano (sin HTML) para limpieza y validaciones
     function stripHTML(html) {
        let tmp = document.createElement("DIV");
        tmp.innerHTML = html;
@@ -351,7 +356,6 @@
         return items;
     }
     
-    // Función específica para parsear comentarios (PN en primera línea, comentarios en las siguientes)
     function parseComentariosSimples(text) {
         let lines = text.split('\n');
         let items = [];
@@ -359,15 +363,11 @@
         
         for (let line of lines) {
             let trimmed = line.trim();
-            if (trimmed === "") continue; // Saltar líneas vacías
-            
-            // Si la línea NO empieza con un carácter especial de lista (-, *, •) 
-            // y no tiene pinta de comentario largo, asumimos que es un PN
+            if (trimmed === "") continue; 
             if (!/^[\-\*•]/.test(trimmed) && trimmed.length < 30 && !trimmed.includes(' ')) {
-                if (currentItem) items.push(currentItem); // Guardamos el anterior
+                if (currentItem) items.push(currentItem); 
                 currentItem = { pn: trimmed, descLines: [] };
             } else if (currentItem) {
-                // Si ya tenemos un PN, esto es un comentario
                 currentItem.descLines.push(trimmed);
             }
         }
@@ -534,8 +534,8 @@
     let optRockwell = crearOptionBtn("Ciclo Rockwell", "[R]");
     let optExtraer = crearOptionBtn("Copiar PNs (Alt+C)", "[C]");
     let optAuditoria = crearOptionBtn("Auditar Cotización", "[A]");
-
-    // NUEVO BOTÓN: Add Comment
+    
+    // BOTÓN: Add Comment
     let optAddComment = crearOptionBtn("Add Comment", "[+]");
 
     let optBorrarPorPN = crearOptionBtn("Borrar por PN", "[X]"); optBorrarPorPN.style.color = "#ff3333";
@@ -674,7 +674,7 @@
             let pn = getIdentificadorFila(fila) || "Fila " + (idx + 1); let erroresFila = [];
             let iTime = fila.querySelector('input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]');
             let btnDays = fila.querySelector('button[data-test-id="property-input-dias___semanas_entrega"]');
-            let iPrice = fila.querySelector('input[data-test-id="property-input-price"]');
+            let iPrice = fila.querySelector('input[data-test-id="property-input-price"], input[data-test-id="property-input-hs_price"], input[data-selenium-test="property-input-price"], input[name="price"]');
             let btnMarca = fila.querySelector('button[data-test-id="property-input-marca"], [data-test-id="property-input-marca"]');
 
             if (obtenerValorNumerico(iQty) === 0) erroresFila.push("Cantidad 0 o vacía");
@@ -1131,7 +1131,6 @@
                         await esperar(300); continue;
                     }
 
-                    // RESTAURADO EL FORMATO HTML PARA EL STOCK
                     let nuevoValor = valorActual.trim() + '<br> <strong>' + item.stock + ' UND en stock</strong> <br> <em>Sujeto a variación de stock</em>';
                     setReactValue(inputNombre, nuevoValor); await esperar(150); dispararEnter(inputNombre); await esperar(300);
 
@@ -1245,8 +1244,8 @@
         });
     }
 
-    const SEL_PRECIO = 'input[data-test-id="property-input-price"]';
-    const SEL_DESC = 'input[data-test-id="property-input-discount-percentage"]';
+    const SEL_PRECIO = 'input[data-test-id="property-input-price"], input[data-test-id="property-input-hs_price"], input[data-selenium-test="property-input-price"], input[name="price"]';
+    const SEL_DESC = 'input[data-test-id="property-input-discount-percentage"], input[data-test-id="property-input-hs_discount_percentage"]';
     const SEL_TIEMPO = 'input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]';
 
     function obtenerInputCampo(fila, campo) {
@@ -1292,13 +1291,90 @@
                 if (etiquetaEliminar) {
                     simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
                 }
-                await esperar(250); // Dar tiempo extra a que HubSpot procese el borrado
+                await esperar(250); 
             }
         }
 
         actualizarProgreso(0, 0, "");
         btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
         mostrarToast("🗑️ Todas las líneas eliminadas.");
+    };
+
+    optBorrarPorPN.onclick = async () => {
+        menuExtras.style.display = "none";
+
+        tituloModal.innerHTML = "❌ Borrar por PN";
+        contenidoModal.innerHTML = `
+            <p style="font-size:13px; color:#516f90; margin-top:0;">Pega los P/N a eliminar (uno por línea).</p>
+            <textarea id="txtDatosBorrarPN" style="width:100%; height:200px; padding:10px; border:1px solid #cbd6e2; border-radius:4px; font-size:12px; box-sizing:border-box;" placeholder="PN1\nPN2\nPN3"></textarea>
+            <button id="btnEjecutarBorrarPN" class="hs-btn-primary" style="width:100%; padding:12px; border-radius:4px; font-weight:bold; cursor:pointer; margin-top:15px; background-color:#ff3333; border-color:#ff3333;">Eliminar PNs</button>
+        `;
+        overlay.style.display = "flex";
+
+        document.getElementById("btnEjecutarBorrarPN").onclick = async () => {
+            let texto = document.getElementById("txtDatosBorrarPN").value;
+            let pnsInput = texto.split('\n').map(l => l.trim()).filter(p => p !== "");
+
+            if (pnsInput.length === 0) {
+                mostrarToast("[-] Sin PNs válidos ingresados.", false);
+                return;
+            }
+
+            let pnsSet = new Set(pnsInput.map(p => p.toUpperCase()));
+            let pnsEncontrados = new Set();
+            let eliminados = 0;
+
+            overlay.style.display = "none";
+            btnExtras.innerHTML = "⚡ Eliminando..."; btnExtras.style.backgroundColor = "#ffe5e5"; btnExtras.style.color = "#ff3333";
+
+            let filas = Array.from(document.querySelectorAll('tbody tr'));
+
+            actualizarProgreso(0, filas.length, "Buscando PNs para eliminar");
+
+            for (let i = filas.length - 1; i >= 0; i--) {
+                actualizarProgreso(filas.length - i, filas.length, "Buscando PNs para eliminar");
+
+                let fila = filas[i];
+                let rowPNRaw = getIdentificadorFila(fila);
+
+                if (!rowPNRaw) continue;
+
+                let rowPN = rowPNRaw.trim().toUpperCase();
+
+                if (pnsSet.has(rowPN)) {
+                    pnsEncontrados.add(rowPN);
+
+                    fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    fila.style.backgroundColor = COLOR_ERROR;
+                    fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
+                    fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    await esperar(150);
+
+                    let btnAcciones = fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+                    if (btnAcciones) {
+                        simularClic(btnAcciones);
+                        let etiquetaEliminar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.delete"]');
+                        if (etiquetaEliminar) {
+                            simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
+                            eliminados++;
+                        }
+                        await esperar(300);
+                    }
+                }
+            }
+
+            actualizarProgreso(0, 0, "");
+            btnExtras.innerHTML = "Extras ▾"; btnExtras.style.backgroundColor = "transparent"; btnExtras.style.color = "#33475b";
+
+            let noEncontrados = [...pnsSet].filter(pn => !pnsEncontrados.has(pn));
+
+            if (noEncontrados.length > 0) {
+                mostrarToast(`✅ ${eliminados} PNs eliminados.\n\n[!] No encontrados:\n${noEncontrados.join(', ')}`, false);
+            } else {
+                mostrarToast(`🗑️ Éxito: ${eliminados} PNs eliminados de la cotización.`);
+                flash(btnExtras);
+            }
+        };
     };
 
     // ==========================================
@@ -1363,7 +1439,7 @@
                     input.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     await esperar(150);
 
-                    // Llama al motor garantizado (evade enmascaramientos)
+                    // Llama al OMNI-INYECTOR
                     let esCampoSimple = (item.campo === 'cant' || item.campo === 'tiempo');
                     await inyectarHibrido(input, item.valorFloat, esCampoSimple);
 
@@ -1615,7 +1691,7 @@
         flash(btnSuite);
     };
 
-    // 🌟 INYECCIÓN DE COMENTARIOS MASIVOS (FIXED) 🌟
+    // 🌟 INYECCIÓN DE COMENTARIOS MASIVOS
     optAddComment.onclick = async () => {
         let datosUsuario = await solicitarTextoMultilinea("Add Comment", true); // True para modo simple sin @@
         if (!datosUsuario) return;
@@ -1637,15 +1713,14 @@
             let itemData = itemsComentarios[i];
             let pnObjetivo = itemData.pn.toUpperCase();
             
-            // [FIX]: Forzamos que CADA LÍNEA procesada tenga un <br> al inicio. 
-            // Así garantizamos el salto de línea en HubSpot
+            // Convertimos las viñetas y aseguramos que cada línea sea un <br>
             let textoHTML = itemData.descLines.map(l => {
                 let lineaMapeada = l.trim();
                 if (/^[\-\*•]\s+/.test(lineaMapeada)) lineaMapeada = lineaMapeada.replace(/^[\-\*•]\s+/, '&bull; ');
                 lineaMapeada = lineaMapeada.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                                            .replace(/_(.*?)_/g, '<em>$1</em>')
                                            .replace(/\*(.*?)\*/g, '<em>$1</em>');
-                return '<br> ' + lineaMapeada; // ← Agregamos <br> explícito a cada línea
+                return '<br> ' + lineaMapeada; 
             }).join('');
             
             let textoAValidar = itemData.descLines[0].trim(); 
@@ -1690,7 +1765,7 @@
 
                 let inputNombre = await esperarElemento('textarea[data-test-id="line-item-name-input"]', document, 3000);
                 
-                // [NUEVO REQUERIMIENTO]: SOLO inyectar en el campo Nombre. Ignoramos code_desc_gen.
+                // SOLO inyectar en el campo Nombre. Ignoramos code_desc_gen.
                 if (!inputNombre) {
                     fallosCriticos.push(pnObjetivo + ": Panel no abrió");
                     document.body.click();
@@ -1699,10 +1774,9 @@
 
                 let valorActualNombre = inputNombre.value || "";
 
-                // Validación de HTML en bruto (Limpiamos los * y _ de tu input original para buscar la frase pura)
+                // Validación de HTML en bruto para saber si ya existe
                 let textPlanoValidar = textoAValidar.replace(/\*\*(.*?)\*\*/g, '$1').replace(/_(.*?)_/g, '$1').replace(/\*(.*?)\*/g, '$1');
                 
-                // ¿El texto ya está en el nombre actual?
                 if (valorActualNombre.includes(textPlanoValidar)) {
                     let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
                     let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
@@ -1712,14 +1786,12 @@
                     document.body.click(); 
                     await esperar(200);
                     
-                    filaTarget.style.backgroundColor = COLOR_ERROR; // Rojo leve (Menos es Más)
+                    filaTarget.style.backgroundColor = COLOR_ERROR;
                     filaTarget.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
                     omitidos++;
                     continue;
                 }
 
-                // INYECCIÓN HTML SÓLO EN NOMBRE
-                // [FIX]: No ponemos <br> extra aquí porque textoHTML ya lo trae en su primera línea.
                 let nuevoValorNombre = valorActualNombre.trim() + textoHTML;
                 setReactValue(inputNombre, nuevoValorNombre);
                 await esperar(150);
