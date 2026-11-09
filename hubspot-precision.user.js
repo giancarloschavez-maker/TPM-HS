@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.07
+// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.08
 // @namespace    http://tampermonkey.net/
-// @version      9.07
-// @description  Script Definitivo. Corrección validación Add Comment (anti-duplicados) e inyección con salto de línea inicial (<br>).
+// @version      9.08
+// @description  Script Definitivo. Inyección de comentarios planos en Nombre y Restauración de función "Borrar Todo".
 // @match        https://app.hubspot.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
@@ -1268,6 +1268,38 @@
         fila.style.backgroundColor = color;
         fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = color; });
     }
+
+    optBorrar.onclick = async () => {
+        menuSuite.style.display = "none";
+        
+        btnSuite.innerHTML = "⚡ Eliminando..."; btnSuite.style.backgroundColor = "#ffe5e5"; btnSuite.style.color = "#ff3333";
+        let filas = document.querySelectorAll('tbody tr');
+        actualizarProgreso(0, filas.length, "Eliminando líneas");
+
+        // Bucle inverso para evitar desincronización del DOM al eliminar elementos
+        for (let i = filas.length - 1; i >= 0; i--) {
+            actualizarProgreso(filas.length - i, filas.length, "Eliminando líneas");
+            let fila = filas[i];
+            
+            fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            await esperar(150);
+
+            let btnAcciones = fila.querySelector('button[data-test-id="library-item-dropdown-actions-btn"]') || fila.querySelector('button[data-selenium-test="library-item-dropdown-actions-btn"]');
+            if (btnAcciones) {
+                simularClic(btnAcciones);
+                let etiquetaEliminar = await esperarElemento('i18n-string[data-key="lineItems.lineItemRow.nameAndDescription.delete"]');
+                if (etiquetaEliminar) {
+                    simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
+                }
+                await esperar(250); // Dar tiempo extra a que HubSpot procese el borrado
+            }
+        }
+
+        actualizarProgreso(0, 0, "");
+        btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
+        mostrarToast("🗑️ Todas las líneas eliminadas.");
+    };
 
     // ==========================================
     // INYECCIÓN MASIVA
