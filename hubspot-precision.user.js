@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.11
+// @name         HS - PRODUCTIVIDAD - deepseek FINAL V9.12
 // @namespace    http://tampermonkey.net/
-// @version      9.11
-// @description  Script Definitivo. Omni-Inyector de precios garantizado, Borrar Todo y Comentarios en Nombre.
+// @version      9.12
+// @description  Script Definitivo. Restaurada función convertirAHTML. Parseo de precios y comentarios en Nombre.
 // @match        https://app.hubspot.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
@@ -24,7 +24,7 @@
 
     // ⚙️ CONFIGURACIÓN VALIDADOR DE DATOS MASIVOS
     const VAL_CANT_MAX = 10000;
-    const VAL_PRECIO_MAX = 1000000; // Ampliado por precaución
+    const VAL_PRECIO_MAX = 100000;
     const VAL_DESC_MAX_SOSPECHOSO = 50;
 
     // ⚙️ CONFIGURACIÓN VALIDADOR DE MÚLTIPLOS
@@ -95,7 +95,7 @@
         }
         let porcentaje = Math.round((actual / total) * 100);
         progressBar.style.display = 'block'; progressBar.style.width = porcentaje + '%';
-        progressText.style.display = 'block'; progressText.innerHTML = `[~] ${mensaje}: ${actual} / ${total} (${porcentaje}%)`;
+        progressText.style.display = 'block'; progressText.innerHTML = "[~] " + mensaje + ": " + actual + " / " + total + " (" + porcentaje + "%)";
     }
 
     const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -115,7 +115,7 @@
     }
 
     // ==========================================
-    // 🚀 MOTORES DE INYECCIÓN (OMNI-INYECTOR FIJO)
+    // 🚀 MOTORES DE INYECCIÓN (Precios y Cantidades)
     // ==========================================
     function setReactValue(element, value) {
         if (!element) return;
@@ -140,55 +140,51 @@
         element.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
-    // 🔥 OMNI-INYECTOR: Prueba todos los métodos hasta que HubSpot acepte el número real
+    async function escribirComoHumano(input, texto) {
+        input.focus();
+        input.select();
+        document.execCommand('delete', false, null);
+        await esperar(40);
+
+        for (let i = 0; i < texto.length; i++) {
+            let char = texto[i];
+            let keyCode = char.charCodeAt(0);
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: keyCode, which: keyCode, bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent('keypress', { key: char, keyCode: keyCode, which: keyCode, bubbles: true }));
+
+            document.execCommand('insertText', false, char);
+
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: char, keyCode: keyCode, which: keyCode, bubbles: true }));
+            await esperar(20);
+        }
+
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        await esperar(150);
+        dispararEnter(input);
+        input.blur();
+        await esperar(200);
+    }
+
     async function inyectarHibrido(input, valorFloat, esCampoSimple = false) {
         simularClic(input);
         await esperar(100);
 
-        let strDot = valorFloat.toString();
-        let strComma = strDot.replace('.', ',');
-
-        // INTENTO 1: Número Crudo directo (Bypassa máscaras que exigen tipado estricto)
-        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
-        setReactValue(input, valorFloat);
-        await esperar(80);
-        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
-            dispararEnter(input); input.blur(); return;
+        if (esCampoSimple) {
+            let strDot = valorFloat.toString();
+            input.focus();
+            input.select();
+            setReactValue(input, strDot);
+            await esperar(80);
+            dispararEnter(input);
+            input.blur();
+            return;
         }
 
-        // INTENTO 2: String con Punto
-        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
-        setReactValue(input, strDot);
-        await esperar(80);
-        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
-            dispararEnter(input); input.blur(); return;
-        }
+        let valorRedondeado = Math.ceil(valorFloat * 100) / 100;
+        let strComma = valorRedondeado.toFixed(2).replace('.', ',');
 
-        // INTENTO 3: String con Coma
-        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
-        setReactValue(input, strComma);
-        await esperar(80);
-        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
-            dispararEnter(input); input.blur(); return;
-        }
-
-        // INTENTO 4: Simulación de tipeo / Portapapeles (Coma)
-        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
-        document.execCommand('insertText', false, strComma);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        await esperar(80);
-        if (Math.abs(parseSpanishNumber(input.value) - valorFloat) <= 0.001) {
-            dispararEnter(input); input.blur(); return;
-        }
-
-        // INTENTO 5: Simulación de tipeo / Portapapeles (Punto)
-        input.focus(); input.select(); document.execCommand('delete', false, null); await esperar(20);
-        document.execCommand('insertText', false, strDot);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        await esperar(80);
-
-        dispararEnter(input);
-        input.blur();
+        await escribirComoHumano(input, strComma);
     }
 
     function simularClic(elemento) {
@@ -243,16 +239,23 @@
         if (str === null || str === undefined) return 0;
         let limpio = str.toString().trim().replace(/[^0-9.,-]/g, '');
         if (limpio === '') return 0;
-        if (limpio.includes('.') && limpio.includes(',')) {
-            if (limpio.indexOf('.') < limpio.indexOf(',')) limpio = limpio.replace(/\./g, '').replace(',', '.');
+
+        let ultimoPunto = limpio.lastIndexOf('.');
+        let ultimaComa = limpio.lastIndexOf(',');
+
+        if (ultimoPunto !== -1 && ultimaComa !== -1) {
+            if (ultimaComa > ultimoPunto) limpio = limpio.replace(/\./g, '').replace(',', '.');
             else limpio = limpio.replace(/,/g, '');
+        } else if (ultimaComa !== -1) {
+            let partes = limpio.split(',');
+            if (partes.length > 2) limpio = limpio.replace(/,/g, '');
+            else if (partes[1].length === 3) limpio = limpio.replace(/,/g, '');
+            else limpio = limpio.replace(',', '.');
         }
-        else if (limpio.includes(',')) limpio = limpio.replace(',', '.');
-        else if (limpio.includes('.')) {
-            let partes = limpio.split('.');
-            let decimales = partes[partes.length - 1];
-            if (decimales.length === 3) limpio = limpio.replace(/\./g, '');
-        }
+
+        let partesPunto = limpio.split('.');
+        if (partesPunto.length > 2) limpio = limpio.replace(/\./g, '');
+
         return parseFloat(limpio) || 0;
     }
 
@@ -323,6 +326,7 @@
         setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => { toast.remove(); }, 400); }, esExito ? 4000 : 9000);
     }
 
+    // 🌟 FUNCIÓN RESTAURADA 🌟
     function convertirAHTML(texto) {
         if (!texto) return "";
         return texto.split('\n').map(l => {
@@ -332,12 +336,6 @@
             l = l.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/_(.*?)_/g, '<em>$1</em>').replace(/\*(.*?)\*/g, '<em>$1</em>');
             return l;
         }).filter(l => l.length > 0).join('<br>');
-    }
-
-    function stripHTML(html) {
-       let tmp = document.createElement("DIV");
-       tmp.innerHTML = html;
-       return tmp.textContent || tmp.innerText || "";
     }
 
     function parseMultipleGenerics(text) {
@@ -355,17 +353,18 @@
         if (currentItem) items.push(currentItem);
         return items;
     }
-    
+
     function parseComentariosSimples(text) {
         let lines = text.split('\n');
         let items = [];
         let currentItem = null;
-        
+
         for (let line of lines) {
             let trimmed = line.trim();
-            if (trimmed === "") continue; 
+            if (trimmed === "") continue;
+
             if (!/^[\-\*•]/.test(trimmed) && trimmed.length < 30 && !trimmed.includes(' ')) {
-                if (currentItem) items.push(currentItem); 
+                if (currentItem) items.push(currentItem);
                 currentItem = { pn: trimmed, descLines: [] };
             } else if (currentItem) {
                 currentItem.descLines.push(trimmed);
@@ -377,25 +376,27 @@
 
     function solicitarTextoMultilinea(tituloModalPersonalizado, esParaComentarios = false) {
         return new Promise((resolve) => {
-            let placeholderText = esParaComentarios 
-                ? "PN1\\n- Comentario 1\\n- Comentario 2\\nPN2\\n- Comentario 3" 
+            let placeholderText = esParaComentarios
+                ? "PN1\\n- Comentario 1\\n**Comentario 2**\\nPN2\\n- Comentario 3"
                 : "PN1@@Especificaciones\\ncomentario 1\\nPN2@@Otra info...";
-                
+
             let modalGen = document.createElement('div');
             modalGen.className = 'modal-precision';
-            modalGen.innerHTML = '<div class="modal-content-precision">' +
-                '<h4 style="margin-top:0; color:#33475b;"><span class="icon-sobrio">[*]</span> Formateador (' + tituloModalPersonalizado + ')</h4>' +
-                '<p style="font-size:11px; color:#516f90; margin-bottom:8px;">• Negrita: <b>**texto**</b> | • Cursiva: <i>_texto_</i> | • Viñeta: <b>- ítem</b></p>' +
-                '<textarea id="txtEntradaPrecision" rows="8" style="width:100%; border:1px solid #cbd6e2; border-radius:4px; padding:8px; font-size:12px; box-sizing:border-box;" placeholder="'+ placeholderText +'"></textarea>' +
-                '<div style="margin-top:8px;"><span style="font-size:10px; font-weight:bold; color:#516f90;">VISTA PREVIA:</span><div id="previewPrecision" class="preview-box"><i>Aparecerá aquí...</i></div></div>' +
-                '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">' +
-                    '<span style="font-size:10px; color:#7c98b6;">Presiona <b>Ctrl + Enter</b> para enviar</span>' +
-                    '<div style="display:flex; gap:8px;">' +
-                        '<button id="btnCancelarModalGen" style="padding:6px 12px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>' +
-                        '<button id="btnAceptarModalGen" style="padding:6px 12px; background:#00a4bd; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">Procesar y Agregar</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>';
+            modalGen.innerHTML = `
+                <div class="modal-content-precision">
+                    <h4 style="margin-top:0; color:#33475b;"><span class="icon-sobrio">[*]</span> Formateador (${tituloModalPersonalizado})</h4>
+                    <p style="font-size:11px; color:#516f90; margin-bottom:8px;">• Negrita: <b>**texto**</b> | • Cursiva: <i>_texto_</i> | • Viñeta: <b>- ítem</b></p>
+                    <textarea id="txtEntradaPrecision" rows="8" style="width:100%; border:1px solid #cbd6e2; border-radius:4px; padding:8px; font-size:12px; box-sizing:border-box;" placeholder="${placeholderText}"></textarea>
+                    <div style="margin-top:8px;"><span style="font-size:10px; font-weight:bold; color:#516f90;">VISTA PREVIA:</span><div id="previewPrecision" class="preview-box"><i>Aparecerá aquí...</i></div></div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+                        <span style="font-size:10px; color:#7c98b6;">Presiona <b>Ctrl + Enter</b> para enviar</span>
+                        <div style="display:flex; gap:8px;">
+                            <button id="btnCancelarModalGen" style="padding:6px 12px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>
+                            <button id="btnAceptarModalGen" style="padding:6px 12px; background:#00a4bd; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">Procesar y Agregar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
             document.body.appendChild(modalGen);
             let txtArea = document.getElementById('txtEntradaPrecision');
             let preview = document.getElementById('previewPrecision');
@@ -403,18 +404,18 @@
             txtArea.oninput = () => {
                 let val = txtArea.value.trim();
                 if (!val) { preview.innerHTML = '<i>Aparecerá aquí...</i>'; return; }
-                
+
                 let items = esParaComentarios ? parseComentariosSimples(val) : parseMultipleGenerics(val);
-                
-                if (items.length === 0) { 
-                    preview.innerHTML = esParaComentarios ? '<i>Formato inválido. Usa P/N en una línea y los comentarios abajo.</i>' : '<i>Formato inválido. Usa P/N@@Descripción</i>'; 
-                    return; 
+
+                if (items.length === 0) {
+                    preview.innerHTML = esParaComentarios ? '<i>Formato inválido. Usa P/N en una línea y los comentarios abajo.</i>' : '<i>Formato inválido. Usa P/N@@Descripción</i>';
+                    return;
                 }
-                
-                let html = "<b>[i] " + items.length + " Elemento(s) detectado(s):</b><br><br>";
+
+                let html = `<b>[i] ${items.length} Elemento(s) detectado(s):</b><br><br>`;
                 items.forEach((item, idx) => {
                     let descFormat = convertirAHTML(item.descLines.join('\n'));
-                    html += '<b style="color:#00a4bd;">' + (idx + 1) + '. [' + item.pn + ']</b><br><div style="padding-left:10px; border-left:2px solid #cbd6e2; margin-top:4px; font-size:11px;">' + descFormat + '</div><br>';
+                    html += `<b style="color:#00a4bd;">${idx + 1}. [${item.pn}]</b><br><div style="padding-left:10px; border-left:2px solid #cbd6e2; margin-top:4px; font-size:11px;">${descFormat}</div><br>`;
                 });
                 preview.innerHTML = html;
             };
@@ -434,7 +435,7 @@
             if (!iQty) return;
             let idFinal = getIdentificadorFila(f);
             let cant = obtenerValorNumerico(iQty);
-            if (idFinal) res.push(idFinal + "\t" + cant);
+            if (idFinal) res.push(`${idFinal}\t${cant}`);
         });
         if (res.length === 0) { mostrarToast("[-] No se encontraron PNs.", false); return; }
         try { GM_setClipboard(res.join('\n')); }
@@ -508,7 +509,7 @@
     LISTA_GEN.forEach(item => {
         let btnItem = document.createElement("button"); btnItem.className = "btn-generico";
         let nombreCorto = item.desc.replace("GEN-ELECTRICA-", "").trim();
-        btnItem.innerHTML = '<b style="color:#33475b; font-size:11px;">' + nombreCorto + '</b><br><span style="color:#7c98b6; font-size:10px;">' + item.code + '</span>';
+        btnItem.innerHTML = `<b style="color:#33475b; font-size:11px;">${nombreCorto}</b><br><span style="color:#7c98b6; font-size:10px;">${item.code}</span>`;
         btnItem.dataset.codigo = item.code; fragmento.appendChild(btnItem);
     });
     contenedorListaGen.appendChild(fragmento); menuGen.appendChild(contenedorListaGen); dockGroup.appendChild(menuGen);
@@ -521,7 +522,7 @@
 
     function crearOptionBtn(texto, icono) {
         let b = document.createElement("button"); b.className = "hs-menu-item";
-        b.innerHTML = '<span class="icon-sobrio">' + icono + '</span> <span style="margin-left:8px;">' + texto + '</span>';
+        b.innerHTML = `<span class="icon-sobrio">${icono}</span> <span style="margin-left:8px;">${texto}</span>`;
         b.style.cssText = "padding:8px 16px; background-color:transparent; color:#33475b; border:none; cursor:pointer; font-weight:500; text-align:left; font-size:13px; width:100%; display:flex; align-items:center;";
         return b;
     }
@@ -534,10 +535,8 @@
     let optRockwell = crearOptionBtn("Ciclo Rockwell", "[R]");
     let optExtraer = crearOptionBtn("Copiar PNs (Alt+C)", "[C]");
     let optAuditoria = crearOptionBtn("Auditar Cotización", "[A]");
-    
-    // BOTÓN: Add Comment
-    let optAddComment = crearOptionBtn("Add Comment", "[+]");
 
+    let optAddComment = crearOptionBtn("Add Comment", "[+]");
     let optBorrarPorPN = crearOptionBtn("Borrar por PN", "[X]"); optBorrarPorPN.style.color = "#ff3333";
     let optValMult = crearOptionBtn("Val. Mult.", "[M]");
 
@@ -630,8 +629,8 @@
                 let faltante = qty - stock;
                 if (faltante % mult !== 0) {
                     esValido = false;
-                    if (stock === 0) mensajeError = "Aumentar a múltiplo de " + mult;
-                    else mensajeError = "Pedir " + stock + " (Stock) + mult. de " + mult;
+                    if (stock === 0) mensajeError = `Aumentar a múltiplo de ${mult}`;
+                    else mensajeError = `Pedir ${stock} (Stock) + mult. de ${mult}`;
                 }
             }
 
@@ -645,7 +644,7 @@
             if (esValido) {
                 if (mult > 1 && celdaNombre) {
                     let badge = document.createElement('span');
-                    badge.className = 'alerta-mult-badge'; badge.style.backgroundColor = '#00bda5'; badge.innerText = "Mult: " + mult + " OK";
+                    badge.className = 'alerta-mult-badge'; badge.style.backgroundColor = '#00bda5'; badge.innerText = `Mult: ${mult} OK`;
                     celdaNombre.appendChild(badge);
                 }
                 procesados++;
@@ -654,15 +653,15 @@
                 fila.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
                 if (celdaNombre) {
                     let badge = document.createElement('span');
-                    badge.className = 'alerta-mult-badge'; badge.style.backgroundColor = '#ff3333'; badge.innerText = "[!] " + mensajeError;
+                    badge.className = 'alerta-mult-badge'; badge.style.backgroundColor = '#ff3333'; badge.innerText = `[!] ${mensajeError}`;
                     celdaNombre.appendChild(badge);
                 }
                 errores++;
             }
         }
 
-        if (errores === 0) mostrarToast("[OK] " + procesados + " productos validados. ¡Todo perfecto!");
-        else mostrarToast("[!] Revisión completada: " + errores + " filas requieren atención.", false);
+        if (errores === 0) mostrarToast(`[OK] ${procesados} productos validados. ¡Todo perfecto!`);
+        else mostrarToast(`[!] Revisión completada: ${errores} filas requieren atención.`, false);
     };
 
     optAuditoria.onclick = () => {
@@ -671,10 +670,10 @@
             let fila = filas[idx];
             let iQty = getInputCantidad(fila);
             if (!iQty) continue;
-            let pn = getIdentificadorFila(fila) || "Fila " + (idx + 1); let erroresFila = [];
+            let pn = getIdentificadorFila(fila) || `Fila ${idx + 1}`; let erroresFila = [];
             let iTime = fila.querySelector('input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]');
             let btnDays = fila.querySelector('button[data-test-id="property-input-dias___semanas_entrega"]');
-            let iPrice = fila.querySelector('input[data-test-id="property-input-price"], input[data-test-id="property-input-hs_price"], input[data-selenium-test="property-input-price"], input[name="price"]');
+            let iPrice = fila.querySelector('input[data-test-id="property-input-price"]');
             let btnMarca = fila.querySelector('button[data-test-id="property-input-marca"], [data-test-id="property-input-marca"]');
 
             if (obtenerValorNumerico(iQty) === 0) erroresFila.push("Cantidad 0 o vacía");
@@ -685,14 +684,14 @@
                 let textMarca = btnMarca.textContent.trim().toUpperCase();
                 if (textMarca === "" || textMarca.includes("PRECISION")) erroresFila.push("Marca incorrecta");
             }
-            if (erroresFila.length > 0) reporteErrores.push('<b style="color:#33475b;">' + pn + ':</b> <span style="color:#ff3333;">' + erroresFila.join(" | ") + '</span>');
+            if (erroresFila.length > 0) reporteErrores.push(`<b style="color:#33475b;">${pn}:</b> <span style="color:#ff3333;">${erroresFila.join(" | ")}</span>`);
         }
 
         tituloModal.innerHTML = "[A] Revisión";
         if (reporteErrores.length === 0) {
-            contenidoModal.innerHTML = '<div style="padding:15px; background-color:' + COLOR_EXITO + '; color:#00bda5; border:1px solid #00bda5; border-radius:4px; font-weight:bold; text-align:center;">¡Todo perfecto!</div>';
+            contenidoModal.innerHTML = `<div style="padding:15px; background-color:${COLOR_EXITO}; color:#00bda5; border:1px solid #00bda5; border-radius:4px; font-weight:bold; text-align:center;">¡Todo perfecto!</div>`;
         } else {
-            contenidoModal.innerHTML = '<div style="margin-bottom:10px; font-size:13px; color:#ff3333; font-weight:bold;">Errores en ' + reporteErrores.length + ' fila(s):</div><div style="border:1px solid #ff3333; background-color:' + COLOR_ERROR + '; padding:12px; border-radius:4px; max-height:400px; overflow-y:auto; font-size:13px; line-height:1.6;">' + reporteErrores.join('<br>') + '</div>';
+            contenidoModal.innerHTML = `<div style="margin-bottom:10px; font-size:13px; color:#ff3333; font-weight:bold;">Errores en ${reporteErrores.length} fila(s):</div><div style="border:1px solid #ff3333; background-color:${COLOR_ERROR}; padding:12px; border-radius:4px; max-height:400px; overflow-y:auto; font-size:13px; line-height:1.6;">${reporteErrores.join('<br>')}</div>`;
         }
         overlay.style.display = "flex";
     };
@@ -700,15 +699,17 @@
     function mostrarFallaClonacion(items, failedIndex, failedPN, razon) {
         let modalResume = document.createElement('div');
         modalResume.className = 'modal-precision';
-        modalResume.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff3333;">' +
-            '<h3 style="margin-top:0; color:#ff3333;">[X] Falla</h3>' +
-            '<p style="font-size:13px; color:#33475b;">Se detuvo en el ítem <b>' + (failedIndex + 1) + ' de ' + items.length + '</b> [P/N: ' + failedPN + '].</p>' +
-            '<p style="font-size:11px; color:#516f90;"><b>Razón:</b> ' + razon + '</p>' +
-            '<div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;">' +
-                '<button id="btnCancelarResume" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>' +
-                '<button id="btnReanudarClonacion" style="padding:8px 16px; background:#8e44ad; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[C] Reanudar</button>' +
-            '</div>' +
-        '</div>';
+        modalResume.innerHTML = `
+            <div class="modal-content-precision" style="border-top: 5px solid #ff3333;">
+                <h3 style="margin-top:0; color:#ff3333;">[X] Falla</h3>
+                <p style="font-size:13px; color:#33475b;">Se detuvo en el ítem <b>${failedIndex + 1} de ${items.length}</b> [P/N: ${failedPN}].</p>
+                <p style="font-size:11px; color:#516f90;"><b>Razón:</b> ${razon}</p>
+                <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;">
+                    <button id="btnCancelarResume" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>
+                    <button id="btnReanudarClonacion" style="padding:8px 16px; background:#8e44ad; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[C] Reanudar</button>
+                </div>
+            </div>
+        `;
         document.body.appendChild(modalResume);
         document.getElementById('btnCancelarResume').onclick = () => { modalResume.remove(); btnClonarGen.innerHTML = "[C]"; btnClonarGen.style.backgroundColor = "transparent"; };
         document.getElementById('btnReanudarClonacion').onclick = () => { modalResume.remove(); ejecutarClonadoMasivo(items, failedIndex); };
@@ -983,19 +984,19 @@
                 rec.appendChild(itemUI);
 
                 if (pn.toUpperCase().startsWith("GEN-")) {
-                    itemUI.innerHTML = '<b>' + pn + ':</b> <span style="color:#7c98b6; font-style:italic;">Omitido</span>';
+                    itemUI.innerHTML = `<b>${pn}:</b> <span style="color:#7c98b6; font-style:italic;">Omitido</span>`;
                     return;
                 }
 
-                itemUI.innerHTML = '<b>' + pn + ':</b> Consultando... [...]';
+                itemUI.innerHTML = `<b>${pn}:</b> Consultando... [...]`;
                 let est = await consultarRockwellConReintento(pn);
                 let colorTextoModal = "#7c98b6"; let colorFondoFila = "";
-                
+
                 if (est.toLowerCase().includes("active mature")) { colorTextoModal = "#f5c26b"; colorFondoFila = COLOR_ALERTA; }
                 else if (est.toLowerCase() === "active") { colorTextoModal = "#00bda5"; colorFondoFila = COLOR_EXITO; }
                 else if (est.toLowerCase().includes("discontinued") || est.toLowerCase().includes("end of life")) { colorTextoModal = "#ff3333"; colorFondoFila = COLOR_ERROR; }
 
-                itemUI.innerHTML = '<b>' + pn + ':</b> <span style="color:' + colorTextoModal + '; font-weight:bold;">' + est + '</span>';
+                itemUI.innerHTML = `<b>${pn}:</b> <span style="color:${colorTextoModal}; font-weight:bold;">${est}</span>`;
 
                 if (colorFondoFila !== "") {
                     filas.forEach(f => {
@@ -1052,35 +1053,37 @@
         modalStock.className = 'modal-precision';
 
         let filasHTML = filasAProcesar.map(item => {
-            return '<tr style="border-bottom:1px solid #eaf0f6;">' +
-                   '<td style="padding:10px 8px; font-weight:bold; color:#33475b; font-size:13px;">' + escapeHTML(item.pn) + '</td>' +
-                   '<td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px;">' + item.cantidad + '</td>' +
-                   '<td style="padding:10px 8px; text-align:center; font-size:13px;"><span style="font-weight:bold; color:' + (item.margen < 0 ? '#ff3333' : '#f5c26b') + ';">' + item.stock + '</span></td>' +
-                   '<td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px; font-weight:bold;">' + escapeHTML(item.textoLeadTime) + '</td>' +
-                   '</tr>';
+            return `<tr style="border-bottom:1px solid #eaf0f6;">
+                   <td style="padding:10px 8px; font-weight:bold; color:#33475b; font-size:13px;">${escapeHTML(item.pn)}</td>
+                   <td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px;">${item.cantidad}</td>
+                   <td style="padding:10px 8px; text-align:center; font-size:13px;"><span style="font-weight:bold; color:${item.margen < 0 ? '#ff3333' : '#f5c26b'};">${item.stock}</span></td>
+                   <td style="padding:10px 8px; text-align:center; color:#516f90; font-size:13px; font-weight:bold;">${escapeHTML(item.textoLeadTime)}</td>
+                   </tr>`;
         }).join('');
 
-        modalStock.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 550px; padding: 15px 20px;">' +
-            '<h3 style="margin-top:0; color:#ff7a59; margin-bottom:5px;">[!] Stock</h3>' +
-            '<p style="font-size:13px; color:#33475b; margin-bottom:10px;">Se encontraron <b>' + filasAProcesar.length + ' ítem(s)</b> con stock ajustado. ¿Agregar aviso?</p>' +
-            '<div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; margin-bottom: 15px; background: #f8fafc;">' +
-                '<table style="width:100%; border-collapse:collapse;">' +
-                    '<thead>' +
-                        '<tr style="background:#eaf0f6; border-bottom:2px solid #cbd6e2;">' +
-                            '<th style="padding:8px; text-align:left; font-size:11px; color:#516f90;">Part number</th>' +
-                            '<th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Cantidad</th>' +
-                            '<th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Stock</th>' +
-                            '<th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Entrega: stock Pe y/o Lead time</th>' +
-                        '</tr>' +
-                    '</thead>' +
-                    '<tbody>' + filasHTML + '</tbody>' +
-                '</table>' +
-            '</div>' +
-            '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
-                '<button id="btnCancelarStock" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">[-] Rechazar</button>' +
-                '<button id="btnAceptarStock" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[OK] Aceptar e Inyectar</button>' +
-            '</div>' +
-        '</div>';
+        modalStock.innerHTML = `
+            <div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 550px; padding: 15px 20px;">
+                <h3 style="margin-top:0; color:#ff7a59; margin-bottom:5px;">[!] Stock</h3>
+                <p style="font-size:13px; color:#33475b; margin-bottom:10px;">Se encontraron <b>${filasAProcesar.length} ítem(s)</b> con stock ajustado. ¿Agregar aviso?</p>
+                <div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; margin-bottom: 15px; background: #f8fafc;">
+                    <table style="width:100%; border-collapse:collapse;">
+                        <thead>
+                            <tr style="background:#eaf0f6; border-bottom:2px solid #cbd6e2;">
+                                <th style="padding:8px; text-align:left; font-size:11px; color:#516f90;">Part number</th>
+                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Cantidad</th>
+                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Stock</th>
+                                <th style="padding:8px; text-align:center; font-size:11px; color:#516f90;">Entrega: stock Pe y/o Lead time</th>
+                            </tr>
+                        </thead>
+                        <tbody>${filasHTML}</tbody>
+                    </table>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:10px;">
+                    <button id="btnCancelarStock" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">[-] Rechazar</button>
+                    <button id="btnAceptarStock" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">[OK] Aceptar e Inyectar</button>
+                </div>
+            </div>
+        `;
         document.body.appendChild(modalStock);
         document.getElementById('btnCancelarStock').onclick = () => { document.body.removeChild(modalStock); };
 
@@ -1131,7 +1134,7 @@
                         await esperar(300); continue;
                     }
 
-                    let nuevoValor = valorActual.trim() + '<br> <strong>' + item.stock + ' UND en stock</strong> <br> <em>Sujeto a variación de stock</em>';
+                    let nuevoValor = valorActual.trim() + `<br> <strong>${item.stock} UND en stock</strong> <br> <em>Sujeto a variación de stock</em>`;
                     setReactValue(inputNombre, nuevoValor); await esperar(150); dispararEnter(inputNombre); await esperar(300);
 
                     let elemGuardar = null;
@@ -1163,7 +1166,7 @@
                     }
                     await esperar(200);
                 }
-            } catch (err) { fallidas.push({ pn: "GLOBAL", razon: err.message }); } 
+            } catch (err) { fallidas.push({ pn: "GLOBAL", razon: err.message }); }
             finally {
                 actualizarProgreso(0, 0, "");
                 btnSuite.innerHTML = "Suite ▾"; btnSuite.style.backgroundColor = "transparent"; btnSuite.style.color = "#33475b";
@@ -1195,16 +1198,18 @@
 
             const modalDiv = document.createElement('div');
             modalDiv.className = 'modal-precision';
-            modalDiv.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 600px;">' +
-                '<h3 style="margin-top:0; color:#ff7a59;">[!] PN repetido en la tabla</h3>' +
-                '<p style="font-size:13px; color:#33475b; margin-bottom:10px;"><b>' + pnSeguro + '</b> aparece <b>' + filasPN.length + ' veces</b>. Indica ' + (esPrecio ? 'el precio' : 'la cantidad') + ' de cada posición:</p>' +
-                '<div style="max-height: 300px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; background: #f8fafc;">' + filasHTML + '</div>' +
-                '<div id="divValidacionSplit" style="padding:8px 12px; border-radius:4px; font-size:12px; font-weight:bold; margin-bottom:12px;"></div>' +
-                '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
-                    '<button id="btnCancelarSplit" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>' +
-                    '<button id="btnAceptarSplit" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">Aplicar</button>' +
-                '</div>' +
-            '</div>';
+            modalDiv.innerHTML = `
+                <div class="modal-content-precision" style="border-top: 5px solid #ff7a59; max-width: 600px;">
+                    <h3 style="margin-top:0; color:#ff7a59;">[!] PN repetido en la tabla</h3>
+                    <p style="font-size:13px; color:#33475b; margin-bottom:10px;"><b>${pnSeguro}</b> aparece <b>${filasPN.length} veces</b>. Indica ${esPrecio ? 'el precio' : 'la cantidad'} de cada posición:</p>
+                    <div style="max-height: 300px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; background: #f8fafc;">${filasHTML}</div>
+                    <div id="divValidacionSplit" style="padding:8px 12px; border-radius:4px; font-size:12px; font-weight:bold; margin-bottom:12px;"></div>
+                    <div style="display:flex; justify-content:flex-end; gap:10px;">
+                        <button id="btnCancelarSplit" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Cancelar</button>
+                        <button id="btnAceptarSplit" style="padding:8px 16px; background:#ff7a59; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">Aplicar</button>
+                    </div>
+                </div>
+            `;
             document.body.appendChild(modalDiv);
 
             const divValidacion = modalDiv.querySelector('#divValidacionSplit');
@@ -1244,8 +1249,8 @@
         });
     }
 
-    const SEL_PRECIO = 'input[data-test-id="property-input-price"], input[data-test-id="property-input-hs_price"], input[data-selenium-test="property-input-price"], input[name="price"]';
-    const SEL_DESC = 'input[data-test-id="property-input-discount-percentage"], input[data-test-id="property-input-hs_discount_percentage"]';
+    const SEL_PRECIO = 'input[data-test-id="property-input-price"]';
+    const SEL_DESC = 'input[data-test-id="property-input-discount-percentage"]';
     const SEL_TIEMPO = 'input[data-test-id="property-input-cantidad_de_tiempo_de_entrega"]';
 
     function obtenerInputCampo(fila, campo) {
@@ -1270,7 +1275,7 @@
 
     optBorrar.onclick = async () => {
         menuSuite.style.display = "none";
-        
+
         btnSuite.innerHTML = "⚡ Eliminando..."; btnSuite.style.backgroundColor = "#ffe5e5"; btnSuite.style.color = "#ff3333";
         let filas = document.querySelectorAll('tbody tr');
         actualizarProgreso(0, filas.length, "Eliminando líneas");
@@ -1279,7 +1284,7 @@
         for (let i = filas.length - 1; i >= 0; i--) {
             actualizarProgreso(filas.length - i, filas.length, "Eliminando líneas");
             let fila = filas[i];
-            
+
             fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
             fila.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
             await esperar(150);
@@ -1291,7 +1296,7 @@
                 if (etiquetaEliminar) {
                     simularClic(etiquetaEliminar.closest('button, [role="menuitem"], li') || etiquetaEliminar.parentNode);
                 }
-                await esperar(250); 
+                await esperar(250); // Dar tiempo extra a que HubSpot procese el borrado
             }
         }
 
@@ -1439,7 +1444,7 @@
                     input.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     await esperar(150);
 
-                    // Llama al OMNI-INYECTOR
+                    // Llama al motor garantizado (evade enmascaramientos)
                     let esCampoSimple = (item.campo === 'cant' || item.campo === 'tiempo');
                     await inyectarHibrido(input, item.valorFloat, esCampoSimple);
 
@@ -1529,15 +1534,17 @@
                 const modalErr = document.createElement('div');
                 modalErr.className = 'modal-precision';
                 const listaHTML = erroresDivision.map(e =>
-                    '<div style="padding:8px; border-bottom:1px solid #eaf0f6;"><b>' + escapeHTML(e.pn) + '</b><br><span style="color:#ff3333; font-size:12px;">' + escapeHTML(e.razon) + '</span></div>'
+                    `<div style="padding:8px; border-bottom:1px solid #eaf0f6;"><b>${escapeHTML(e.pn)}</b><br><span style="color:#ff3333; font-size:12px;">${escapeHTML(e.razon)}</span></div>`
                 ).join('');
-                modalErr.innerHTML = '<div class="modal-content-precision" style="border-top: 5px solid #ff3333; max-width: 500px;">' +
-                    '<h3 style="margin-top:0; color:#ff3333;">[X] Datos inconsistentes</h3>' +
-                    '<div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; padding: 8px; margin-bottom: 15px;">' + listaHTML + '</div>' +
-                    '<div style="display:flex; justify-content:flex-end;">' +
-                        '<button id="btnCerrarErrDiv" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Entendido</button>' +
-                    '</div>' +
-                '</div>';
+                modalErr.innerHTML = `
+                    <div class="modal-content-precision" style="border-top: 5px solid #ff3333; max-width: 500px;">
+                        <h3 style="margin-top:0; color:#ff3333;">[X] Datos inconsistentes</h3>
+                        <div style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd6e2; border-radius: 4px; padding: 8px; margin-bottom: 15px;">${listaHTML}</div>
+                        <div style="display:flex; justify-content:flex-end;">
+                            <button id="btnCerrarErrDiv" style="padding:8px 16px; background:#eaf0f6; border:none; border-radius:4px; cursor:pointer;">Entendido</button>
+                        </div>
+                    </div>
+                `;
                 document.body.appendChild(modalErr);
                 document.getElementById('btnCerrarErrDiv').onclick = () => { modalErr.remove(); btnEjecutar.innerHTML = titulos[tipoLogica].btn; btnEjecutar.disabled = false; procesando = false; };
                 return;
@@ -1587,7 +1594,7 @@
                         bloqueadasGlobal.push({ pn: idFinal, msg: alerta });
                         res.push(`${idFinal}\t---\t---\t[-] ${alerta}`);
                         pintarFila(fila, COLOR_ERROR);
-                        continue; 
+                        continue;
                     }
 
                     const cambio = { clave, pos: idx, campo, fila, pn: idFinal, valorFloat: hayValor ? parseFloat(valorMatch) : null };
@@ -1614,7 +1621,7 @@
                         let tOrig = iTiempo ? obtenerValorNumerico(iTiempo) : 0;
                         res.push(`${idFinal}\t${tOrig}\t${valorMatch}\t${alerta}`);
                     }
-                } 
+                }
             }
 
             const encabezadoNoEnc = noEncontradosGlobal.length > 0 ? `[!] NO ENCONTRADOS: ${noEncontradosGlobal.join(', ')}\n\n` : "";
@@ -1691,9 +1698,9 @@
         flash(btnSuite);
     };
 
-    // 🌟 INYECCIÓN DE COMENTARIOS MASIVOS
+    // 🌟 INYECCIÓN DE COMENTARIOS MASIVOS (FIXED) 🌟
     optAddComment.onclick = async () => {
-        let datosUsuario = await solicitarTextoMultilinea("Add Comment", true); // True para modo simple sin @@
+        let datosUsuario = await solicitarTextoMultilinea("Add Comment", true);
         if (!datosUsuario) return;
 
         let itemsComentarios = parseComentariosSimples(datosUsuario);
@@ -1701,9 +1708,9 @@
 
         btnExtras.innerHTML = "[...]"; btnExtras.style.backgroundColor = "#e59a10";
         let filas = Array.from(document.querySelectorAll('tbody tr'));
-        let fallosCriticos = []; 
-        let omitidos = 0; 
-        let procesados = 0; 
+        let fallosCriticos = [];
+        let omitidos = 0;
+        let procesados = 0;
         let noEncontrados = [];
 
         actualizarProgreso(0, itemsComentarios.length, "Añadiendo Comentarios");
@@ -1712,18 +1719,19 @@
             actualizarProgreso(i + 1, itemsComentarios.length, "Añadiendo Comentarios");
             let itemData = itemsComentarios[i];
             let pnObjetivo = itemData.pn.toUpperCase();
-            
-            // Convertimos las viñetas y aseguramos que cada línea sea un <br>
+
+            // Format to real HTML with <br> prefix per line
             let textoHTML = itemData.descLines.map(l => {
                 let lineaMapeada = l.trim();
+
                 if (/^[\-\*•]\s+/.test(lineaMapeada)) lineaMapeada = lineaMapeada.replace(/^[\-\*•]\s+/, '&bull; ');
                 lineaMapeada = lineaMapeada.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                                            .replace(/_(.*?)_/g, '<em>$1</em>')
                                            .replace(/\*(.*?)\*/g, '<em>$1</em>');
-                return '<br> ' + lineaMapeada; 
+                return '<br> ' + lineaMapeada;
             }).join('');
-            
-            let textoAValidar = itemData.descLines[0].trim(); 
+
+            let textoAValidar = itemData.descLines[0].trim();
 
             let filasDestino = filas.filter(f => {
                 let id = getIdentificadorFila(f);
@@ -1764,8 +1772,7 @@
                 }
 
                 let inputNombre = await esperarElemento('textarea[data-test-id="line-item-name-input"]', document, 3000);
-                
-                // SOLO inyectar en el campo Nombre. Ignoramos code_desc_gen.
+
                 if (!inputNombre) {
                     fallosCriticos.push(pnObjetivo + ": Panel no abrió");
                     document.body.click();
@@ -1773,19 +1780,17 @@
                 }
 
                 let valorActualNombre = inputNombre.value || "";
-
-                // Validación de HTML en bruto para saber si ya existe
                 let textPlanoValidar = textoAValidar.replace(/\*\*(.*?)\*\*/g, '$1').replace(/_(.*?)_/g, '$1').replace(/\*(.*?)\*/g, '$1');
-                
+
                 if (valorActualNombre.includes(textPlanoValidar)) {
                     let nodoCancelar = document.querySelector('i18n-string[data-key="products.edit.footer.cancel"]');
                     let elemCancelar = (nodoCancelar ? nodoCancelar.closest('button') : null) || document.querySelector('button[data-selenium-test="base-dialog-cancel-btn"]');
                     if (elemCancelar) simularClic(elemCancelar);
-                    
+
                     await esperar(200);
-                    document.body.click(); 
+                    document.body.click();
                     await esperar(200);
-                    
+
                     filaTarget.style.backgroundColor = COLOR_ERROR;
                     filaTarget.querySelectorAll('td').forEach(td => { td.style.backgroundColor = COLOR_ERROR; });
                     omitidos++;
